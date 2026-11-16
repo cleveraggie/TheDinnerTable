@@ -1,26 +1,46 @@
 # Sunday Table
 
-A small, local-first recipe organizer and weekly meal planner. Save recipes from anywhere, put meals on the calendar, and collect ingredients into a checkable shopping list.
+A simple, local-first recipe organizer and weekly meal planner. Save recipes from around the web, put meals on the calendar, and collect ingredients into a checkable shopping list.
 
-## Run it
+## Run locally
 
-Open `index.html` in a modern browser. No build step or dependencies required. Your recipes, plans, and shopping list are stored in that browser's local storage.
+Open `index.html` in a modern browser. There is no build step or dependency installation. Your recipes, plans, and shopping list are saved in that browser's local storage.
 
-## First version
+## Project files
 
-- Recipe box with source links, ingredients, notes, and search
+- `index.html` — page structure and app entry point
+- `styles.css` — layout and visual styles
+- `app.js` — recipe, planning, and shopping-list behavior
+- `README.md` — project overview and setup
+- `.gitignore` — common local/editor files excluded from Git
+
+## Current features
+
+- Recipe box with source, ingredients, notes, and search
 - Seven-day meal plan with breakfast, lunch, and dinner slots
 - Shopping list assembled from recipes planned for the displayed week
-- Manual shopping items, checkboxes, and browser persistence
+- Manually added shopping items and checkboxes
+- Browser-local persistence
 
-## Next steps
+## Publish with GitHub Pages
+
+1. Create a new repository on GitHub.
+2. In this project folder, add the repository as `origin` and push the `main` branch:
+
+   ```sh
+   git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.git
+   git add .
+   git commit -m "Build first Sunday Table app"
+   git push -u origin main
+   ```
+
+3. In the repository, open **Settings → Pages**. Select **Deploy from a branch**, choose `main` and `/ (root)`, then save.
+
+The app is static, so GitHub Pages can serve it directly. Data stays in each visitor's browser and does not sync between devices.
+
+## Ideas for next steps
 
 - Import structured recipes from recipe pages
-- Improve handling for social links and recipes in captions/videos
-- Edit recipes and ingredient quantities
-- Sync data across devices with an account or cloud database
-- Export/import a backup
-
-## GitHub
-
-This folder is ready to initialize as a Git repository. To publish it, create a GitHub repository and add its URL as the `origin` remote, then push the `main` branch.
+- Improve support for social links and recipes in captions/videos
+- Edit saved recipes and ingredient quantities
+- Export/import a backup or add account-based sync
