@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#f7f5ef"><title>Sunday Table — your kitchen, in rhythm</title>
+<meta name="theme-color" content="#f7f5ef"><title>The Dinner Table — your kitchen, in rhythm</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header><div class="brand"><div class="brand-mark">✳</div>Sunday Table</div><div class="header-right"><span>Your little corner of the kitchen</span><div class="avatar">C</div></div></header>
+<header><div class="brand"><div class="brand-mark">✳</div>The Dinner Table</div><div class="header-right"><span>Your little corner of the kitchen</span><div class="avatar">C</div></div></header>
 <main class="shell"><div class="welcome"><div><div class="eyebrow" id="season">A little inspiration for the week</div><h1>Let’s make this week delicious.</h1><p>Plan a few good meals. Let the rest take care of itself.</p></div><div class="week-nav"><button class="btn icon" id="prevWeek">‹</button><button class="btn" id="weekLabel"></button><button class="btn icon" id="nextWeek">›</button><button class="btn small" id="thisWeek">Today</button></div></div>
 <nav class="tabs"><button class="tab active" data-view="plan">Meal plan</button><button class="tab" data-view="recipes">Recipe box <span class="tabcount" id="recipeCount">0</span></button><button class="tab" data-view="shopping">Shopping list <span class="tabcount" id="shopCount">0</span></button><button class="tab" data-view="parties">Party menus <span class="tabcount" id="eventCount">0</span></button><button class="tab" data-view="settings">Settings</button></nav>
 <section class="view active" id="plan"><div class="week-grid" id="weekGrid"></div><div class="week-footer"><span id="planSummary">Your week, your way.</span><button class="btn small" id="clearWeek">Clear this week</button></div></section>
@@ -20,5 +20,6 @@
 <dialog id="eventDialog"><form method="dialog" class="modal" id="eventForm"><h2>Host an event</h2><div class="field"><label>What are we celebrating?</label><input name="name" required placeholder="e.g. Friendsgiving"></div><div class="field"><label>Date</label><input name="date" type="date"></div><div class="field"><label>A note for your guests</label><textarea name="note" placeholder="Bring a cozy layer — we'll be outside!" style="min-height:70px"></textarea></div><div class="modal-actions"><button class="btn" value="cancel">Cancel</button><button class="btn primary" value="save">Create menu</button></div></form></dialog>
 <dialog id="contributionDialog"><form method="dialog" class="modal" id="contributionForm"><h2>Add what you’re bringing</h2><div class="field"><label>Your name</label><input name="person" required placeholder="e.g. Alex"></div><div class="field"><label>What are you bringing?</label><input name="item" required placeholder="e.g. roasted Brussels sprouts"></div><div class="field"><label>Category</label><select name="category"><option>Side</option><option>Snack</option><option>Drink</option><option>Dessert</option><option>Main</option><option>Other</option></select></div><div class="field"><label>Quantity or note (optional)</label><input name="note" placeholder="Serves 6, contains nuts…"></div><div class="modal-actions"><button class="btn" value="cancel">Cancel</button><button class="btn primary" value="save">Add to menu</button></div></form></dialog>
 <script src="app.js" defer></script></body></html>
+
 
 

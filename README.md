@@ -1,4 +1,4 @@
-# Sunday Table
+# The Dinner Table
 
 A simple, local-first recipe organizer and weekly meal planner. Save recipes from around the web, put meals on the calendar, and collect ingredients into a checkable shopping list.
 
@@ -35,7 +35,7 @@ Party menus, friend codes, and availability currently run as a local prototype: 
    ```sh
    git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.git
    git add .
-   git commit -m "Build first Sunday Table app"
+   git commit -m "Build the first Dinner Table app version"
    git push -u origin main
    ```
 
@@ -49,3 +49,4 @@ The app is static, so GitHub Pages can serve it directly. Data stays in each vis
 - Improve support for social links and recipes in captions/videos
 - Edit saved recipes and ingredient quantities
 - Export/import a backup or add account-based sync
+
