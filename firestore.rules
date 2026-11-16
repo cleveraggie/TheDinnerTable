@@ -16,21 +16,19 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Codes are random, shared by the user, and only directly retrievable (never listable).
+    // A friend code exposes only the name and code identity. Legacy availability
+    // fields are readable only by their owner until that profile is refreshed.
     match /friendCodes/{code} {
-      allow get: if signedIn();
+      allow get: if signedIn()
+        && (!resource.data.keys().hasAny(['availability']) || resource.data.uid == request.auth.uid);
       allow list: if false;
       allow create: if signedIn()
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.keys().hasOnly([
-          'uid', 'displayName', 'availability', 'updatedAt'
-        ]);
+        && request.resource.data.keys().hasOnly(['uid', 'displayName', 'updatedAt']);
       allow update: if signedIn()
         && resource.data.uid == request.auth.uid
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.keys().hasOnly([
-          'uid', 'displayName', 'availability', 'updatedAt'
-        ]);
+        && request.resource.data.keys().hasOnly(['uid', 'displayName', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -51,6 +49,49 @@ service cloud.firestore {
         && resource.data.memberUids.hasAny([request.auth.uid]);
     }
 
+    // Groups are private to their owner; only explicit availability and menu
+    // membership snapshots are shared with selected group members.
+    match /groups/{groupId} {
+      allow get, list: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberUids is list
+        && request.auth.uid in request.resource.data.memberUids
+        && request.resource.data.availability is list
+        && request.resource.data.availability.size() == 7
+        && request.resource.data.keys().hasOnly([
+          'id', 'name', 'ownerUid', 'memberUids', 'availability', 'createdAt', 'updatedAt'
+        ]);
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberUids is list
+        && request.auth.uid in request.resource.data.memberUids
+        && request.resource.data.availability is list
+        && request.resource.data.availability.size() == 7
+        && request.resource.data.keys().hasOnly([
+          'id', 'name', 'ownerUid', 'memberUids', 'availability', 'createdAt', 'updatedAt'
+        ]);
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /groupAvailability/{shareId} {
+      allow get, list: if signedIn() && (
+        resource.data.ownerUid == request.auth.uid
+        || (resource.data.visibleTo is list && request.auth.uid in resource.data.visibleTo)
+      );
+      allow create, update: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.visibleTo is list
+        && request.auth.uid in request.resource.data.visibleTo
+        && request.resource.data.availability is list
+        && request.resource.data.availability.size() == 7
+        && request.resource.data.keys().hasOnly([
+          'ownerUid', 'groupId', 'groupName', 'displayName', 'visibleTo', 'availability', 'updatedAt'
+        ]);
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
     match /menus/{menuId} {
       allow get, list: if signedIn()
         && resource.data.memberUids is list
@@ -59,21 +100,22 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.memberUids is list
-        && request.resource.data.memberUids.hasAny([request.auth.uid])
+        && request.auth.uid in request.resource.data.memberUids
         && request.resource.data.contributions is list
         && request.resource.data.keys().hasOnly([
           'id', 'name', 'date', 'note', 'accepting', 'contributions',
-          'collaborators', 'ownerUid', 'memberUids', 'createdAt', 'updatedAt'
+          'collaborators', 'ownerUid', 'memberUids', 'audienceGroupIds',
+          'audienceGroupNames', 'directInviteUids', 'createdAt', 'updatedAt'
         ]);
 
-      // Hosts manage the menu and its invitations. Collaborators may append one
+      // Hosts manage access and menu details. Collaborators may append one
       // contribution while the host is accepting them, without editing old entries.
       allow update: if signedIn() && (
         (
           resource.data.ownerUid == request.auth.uid
           && request.resource.data.ownerUid == resource.data.ownerUid
           && request.resource.data.memberUids is list
-          && request.resource.data.memberUids.hasAll(resource.data.memberUids)
+          && request.auth.uid in request.resource.data.memberUids
         ) || (
           resource.data.memberUids.hasAny([request.auth.uid])
           && resource.data.accepting == true

@@ -12,6 +12,7 @@ import {
   arrayUnion,
   collection,
   doc,
+  getDocs,
   getDoc,
   getFirestore,
   onSnapshot,
@@ -20,7 +21,8 @@ import {
   setDoc,
   updateDoc,
   where,
-  deleteDoc
+  deleteDoc,
+  writeBatch
 } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 
@@ -35,6 +37,10 @@ let currentProfile = null;
 let stopMenus = null;
 let stopFriends = null;
 let friendAvailability = [];
+let friendEntries = [];
+let myGroups = [];
+let stopGroups = null;
+let stopSharedAvailability = null;
 let loadingRemoteState = false;
 let deepLinkHandled = false;
 
@@ -107,8 +113,7 @@ function renderAuthPanel() {
   const name = currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member';
   panel.innerHTML = `<div class="card firebase-auth-card firebase-signed-in">
     <div class="eyebrow">Signed in</div><div class="firebase-account-row"><div><h3>${escapeHtml(name)}</h3><p class="profile-note">${escapeHtml(currentUser.email || 'Google account')}</p></div><button class="btn small" id="firebaseSignOut" type="button">Sign out</button></div>
-    <p class="firebase-friend-note">Your friend code and availability are saved to Firebase. Share your code with people you want to connect with.</p>
-    <div id="firebaseFriendAvailability" class="firebase-friend-availability">${renderFriendAvailability()}</div>
+    <p class="firebase-friend-note">Your friend code is saved to Firebase. Availability is shared only with the groups you choose below.</p>
     <p id="firebaseAuthMessage" class="firebase-auth-message" aria-live="polite"></p>
   </div>`;
   panel.querySelector('#firebaseSignOut').addEventListener('click', async () => {
@@ -119,7 +124,7 @@ function renderAuthPanel() {
 
 function renderFriendAvailability() {
   if (!friendAvailability.length) return '<div class="profile-note">Connect by friend code to see your friends’ open evenings here.</div>';
-  return friendAvailability.map(friend => `<div class="firebase-friend-row"><b>${escapeHtml(friend.displayName || friend.code)}</b><span>${escapeHtml(friend.days.join(', ') || 'No evenings shared')}</span></div>`).join('');
+  return friendAvailability.map(friend => `<div class="firebase-friend-row"><b>${escapeHtml(friend.displayName || friend.code)} <small>· ${escapeHtml(friend.groupName || 'Shared group')}</small></b><span>${escapeHtml(friend.days.join(', ') || 'No evenings shared')}</span></div>`).join('');
 }
 
 function escapeHtml(value) {
@@ -130,12 +135,11 @@ async function saveProfileToCloud() {
   if (!currentUser || !currentProfile) return;
   const state = app.state;
   const displayName = String(state.profile?.name || currentProfile.displayName || '').trim().slice(0, 60);
-  const availability = Array.from({ length: 7 }, (_, index) => Boolean(state.availability?.[index]));
-  const updated = { ...currentProfile, displayName, availability };
+  const updated = { ...currentProfile, displayName };
   await setDoc(ref('users', currentUser.uid), { ...updated, updatedAt: serverTimestamp() }, { merge: true });
   await setDoc(ref('friendCodes', currentProfile.friendCode), {
-    uid: currentUser.uid, displayName, availability, updatedAt: serverTimestamp()
-  }, { merge: true });
+    uid: currentUser.uid, displayName, updatedAt: serverTimestamp()
+  });
   currentProfile = updated;
   renderAuthPanel();
 }
@@ -167,9 +171,8 @@ async function ensureUserProfile(user) {
   await setDoc(ref('friendCodes', profile.friendCode), {
     uid: user.uid,
     displayName: profile.displayName || localName,
-    availability: Array.isArray(profile.availability) ? profile.availability : [true, true, true, true, true, true, true],
     updatedAt: serverTimestamp()
-  }, { merge: true });
+  });
   currentProfile = { ...profile, displayName: profile.displayName || localName };
   app.state.profile = { name: currentProfile.displayName, code: currentProfile.friendCode, friends: [] };
   app.state.availability = Array.isArray(currentProfile.availability) ? currentProfile.availability : [true, true, true, true, true, true, true];
@@ -239,16 +242,123 @@ function subscribeToFriends() {
     }).filter(friend => friend.uid && friend.code);
     const codes = [...new Set(entries.map(friend => friend.code))];
     app.state.profile.friends = codes;
-    friendAvailability = await Promise.all(codes.map(async code => {
-      const friendDoc = await getDoc(ref('friendCodes', code));
-      if (!friendDoc.exists()) return { code, displayName: code, days: [] };
+    friendEntries = await Promise.all(entries.map(async friend => {
+      const code = friend.code;
+      let friendDoc;
+      try { friendDoc = await getDoc(ref('friendCodes', code)); }
+      catch { return { ...friend, displayName: code }; }
+      if (!friendDoc.exists()) return { ...friend, displayName: code };
       const data = friendDoc.data();
-      const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      return { code, displayName: data.displayName || code, days: weekdays.filter((_, index) => data.availability?.[index]) };
+      return { ...friend, displayName: data.displayName || code };
     }));
-    renderAuthPanel();
+    renderAuthPanel(); renderPrivacyGroups(); renderEventGroupOptions();
     app.save();
   }, error => toast(friendlyError(error)));
+}
+
+function subscribeToGroups() {
+  stopGroups?.();
+  const groupsQuery = query(collection(db, 'groups'), where('ownerUid', '==', currentUser.uid));
+  stopGroups = onSnapshot(groupsQuery, snapshot => {
+    myGroups = snapshot.docs.map(item => ({
+      ...item.data(), id: item.id,
+      memberUids: Array.isArray(item.data().memberUids) ? item.data().memberUids : [currentUser.uid],
+      availability: Array.isArray(item.data().availability) ? item.data().availability : Array(7).fill(false)
+    }));
+    renderPrivacyGroups(); renderEventGroupOptions();
+  }, error => toast(friendlyError(error)));
+}
+
+function subscribeToSharedAvailability() {
+  stopSharedAvailability?.();
+  const sharedQuery = query(collection(db, 'groupAvailability'), where('visibleTo', 'array-contains', currentUser.uid));
+  stopSharedAvailability = onSnapshot(sharedQuery, snapshot => {
+    friendAvailability = snapshot.docs.map(item => item.data())
+      .filter(data => data.ownerUid !== currentUser.uid)
+      .map(data => ({
+        code: data.ownerUid,
+        displayName: data.displayName || 'Dinner Table member',
+        groupName: data.groupName || 'Shared group',
+        days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].filter((_, index) => data.availability?.[index])
+      }));
+    renderAuthPanel(); renderPrivacyGroups();
+  }, error => toast(friendlyError(error)));
+}
+
+function renderEventGroupOptions() {
+  const options = document.getElementById('eventGroupOptions');
+  if (!options) return;
+  if (!currentUser) {
+    options.innerHTML = '<span class="profile-note">Sign in to share menus with groups.</span>';
+    return;
+  }
+  options.innerHTML = myGroups.length
+    ? myGroups.map(group => `<label class="group-check"><input type="checkbox" name="audienceGroup" value="${escapeHtml(group.id)}"><span>${escapeHtml(group.name)}</span></label>`).join('')
+    : '<span class="profile-note">Create a group in Settings first. You can also invite people to a private menu later.</span>';
+}
+
+function renderPrivacyGroups() {
+  const root = document.getElementById('privacyGroups');
+  if (!root) return;
+  if (!currentUser) {
+    root.innerHTML = '<div class="card privacy-groups"><div class="eyebrow">Private groups</div><h3 class="profile-heading">Share availability with the right people.</h3><p class="profile-note">Sign in to create groups and choose which evenings each group can see.</p></div>';
+    return;
+  }
+  const friendOptions = friendEntries.length
+    ? friendEntries.map(friend => `<label class="group-check"><input type="checkbox" name="memberUid" value="${escapeHtml(friend.uid)}"><span>${escapeHtml(friend.displayName)} <small>${escapeHtml(friend.code)}</small></span></label>`).join('')
+    : '<p class="profile-note">Connect with friends by code above, then you can add them to a group.</p>';
+  const renderGroup = group => `<form class="card privacy-group" data-group-form="${escapeHtml(group.id)}">
+    <div class="privacy-group-head"><div><div class="eyebrow">Group</div><input class="profile-name" name="groupName" maxlength="50" required value="${escapeHtml(group.name || '')}" aria-label="Group name"></div><button class="btn small" type="submit">Save group</button></div>
+    <div class="group-form-section"><b>People who belong to this group</b><div class="group-checks">${friendEntries.length ? friendEntries.map(friend => `<label class="group-check"><input type="checkbox" name="memberUid" value="${escapeHtml(friend.uid)}" ${group.memberUids.includes(friend.uid) ? 'checked' : ''}><span>${escapeHtml(friend.displayName)} <small>${escapeHtml(friend.code)}</small></span></label>`).join('') : '<span class="profile-note">Connect friends by code above to add them here.</span>'}</div></div>
+    <div class="group-form-section"><b>Evenings shared with this group</b><p class="profile-note">Only people in this group can see the days you mark open here.</p><div class="availability-days">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((day,index) => `<button type="button" class="availability-day ${group.availability[index] ? 'open' : ''}" data-group-day="${escapeHtml(group.id)}" data-index="${index}" aria-pressed="${Boolean(group.availability[index])}">${day}</button>`).join('')}</div></div>
+    <div class="privacy-group-foot"><span class="profile-note">Members: ${group.memberUids.length} · Availability is private to this group.</span><button class="btn small danger" type="button" data-delete-group="${escapeHtml(group.id)}">Delete group</button></div>
+  </form>`;
+  root.innerHTML = `<div class="card privacy-groups"><div class="eyebrow">Private groups</div><h3 class="profile-heading">Choose who sees your open evenings.</h3><p class="profile-note">Availability is shared only with the groups you choose. Thursday for Family stays private from other groups.</p><form id="groupCreateForm" class="group-create-form"><label>New group name<input class="profile-name" name="groupName" maxlength="50" required placeholder="Family"></label><div class="group-form-section"><b>Add connected friends</b><div class="group-checks">${friendOptions}</div></div><button class="btn primary small" type="submit">Create group</button></form></div>${myGroups.length ? myGroups.map(renderGroup).join('') : ''}<div class="card shared-availability"><div class="eyebrow">Shared with me</div><h3 class="profile-heading">Friends’ open evenings</h3>${friendAvailability.length ? friendAvailability.map(friend => `<div class="firebase-friend-row"><b>${escapeHtml(friend.displayName)} <small>· ${escapeHtml(friend.groupName)}</small></b><span>${escapeHtml(friend.days.join(', ') || 'No evenings shared')}</span></div>`).join('') : '<p class="profile-note">When friends share availability with one of your groups, it will appear here.</p>'}</div>`;
+}
+
+async function saveGroup(form, existingGroup = null) {
+  const formData = new FormData(form);
+  const name = String(formData.get('groupName') || '').trim().slice(0, 50);
+  if (!name) throw new Error('Enter a name for this group.');
+  const groupId = existingGroup?.id || crypto.randomUUID();
+  const memberUids = [...new Set([currentUser.uid, ...formData.getAll('memberUid').map(String)])];
+  const group = {
+    id: groupId, name, ownerUid: currentUser.uid, memberUids,
+    availability: existingGroup?.availability || Array(7).fill(false),
+    ...(existingGroup?.createdAt ? { createdAt: existingGroup.createdAt } : { createdAt: serverTimestamp() }),
+    updatedAt: serverTimestamp()
+  };
+  const availabilityShare = {
+    ownerUid: currentUser.uid, groupId, groupName: name,
+    displayName: currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member',
+    visibleTo: memberUids, availability: group.availability, updatedAt: serverTimestamp()
+  };
+  const batch = writeBatch(db);
+  batch.set(ref('groups', groupId), group);
+  batch.set(ref('groupAvailability', `${currentUser.uid}__${groupId}`), availabilityShare);
+  await batch.commit();
+  myGroups = [...myGroups.filter(item => item.id !== groupId), { ...group, createdAt: existingGroup?.createdAt || null }];
+  await syncGroupMenus();
+  renderPrivacyGroups(); renderEventGroupOptions();
+  toast(existingGroup ? 'Group saved. Its party menu access is updated too.' : 'Group created. Choose its open evenings below.');
+}
+
+async function syncGroupMenus() {
+  const snapshot = await getDocs(query(collection(db, 'menus'), where('memberUids', 'array-contains', currentUser.uid)));
+  const affected = snapshot.docs.filter(item => item.data().ownerUid === currentUser.uid && Array.isArray(item.data().audienceGroupIds));
+  for (const item of affected) {
+    const menu = item.data();
+    const groupIds = menu.audienceGroupIds.filter(id => myGroups.some(group => group.id === id));
+    const selectedGroups = myGroups.filter(group => groupIds.includes(group.id));
+    const directInviteUids = Array.isArray(menu.directInviteUids) ? menu.directInviteUids : [];
+    const memberUids = [...new Set([currentUser.uid, ...directInviteUids, ...selectedGroups.flatMap(group => group.memberUids)])];
+    await updateDoc(ref('menus', item.id), {
+      audienceGroupIds: groupIds,
+      audienceGroupNames: selectedGroups.map(group => group.name),
+      memberUids,
+      updatedAt: serverTimestamp()
+    });
+  }
 }
 
 async function handleAuthState(user) {
@@ -260,6 +370,8 @@ async function handleAuthState(user) {
       await migrateLocalMenus();
       subscribeToMenus();
       subscribeToFriends();
+      subscribeToGroups();
+      subscribeToSharedAvailability();
       renderAuthPanel();
     } catch (error) {
       renderAuthPanel();
@@ -268,7 +380,11 @@ async function handleAuthState(user) {
   } else {
     stopMenus?.(); stopMenus = null;
     stopFriends?.(); stopFriends = null;
+    stopGroups?.(); stopGroups = null;
+    stopSharedAvailability?.(); stopSharedAvailability = null;
     friendAvailability = [];
+    friendEntries = [];
+    myGroups = [];
     currentProfile = null;
     if (signedOutFromAccount) {
       app.state.events = app.state.events.filter(event => !event.ownerUid);
@@ -277,6 +393,7 @@ async function handleAuthState(user) {
       app.save();
     }
     renderAuthPanel();
+    renderPrivacyGroups(); renderEventGroupOptions();
   }
 }
 
@@ -291,7 +408,8 @@ function requireHost(event) {
 async function handleSubmit(event) {
   const form = event.target;
   const formId = form?.id;
-  if (!['profileForm', 'friendForm', 'eventForm', 'collabEventForm', 'contributionForm'].includes(formId)) return;
+  const isGroupForm = formId === 'groupCreateForm' || form.matches('[data-group-form]');
+  if (!['profileForm', 'friendForm', 'eventForm', 'collabEventForm', 'contributionForm'].includes(formId) && !isGroupForm) return;
   if (event.submitter?.value === 'cancel') return;
   if (!currentUser) return;
   event.preventDefault();
@@ -306,12 +424,24 @@ async function handleSubmit(event) {
     } else if (formId === 'friendForm') {
       await connectFriend(String(formData.get('code') || '').trim().toUpperCase());
       form.reset();
+    } else if (isGroupForm) {
+      const groupId = form.dataset.groupForm;
+      const existingGroup = groupId ? myGroups.find(group => group.id === groupId) : null;
+      if (groupId && !existingGroup) throw new Error('That group could not be found. Refresh and try again.');
+      await saveGroup(form, existingGroup);
     } else if (formId === 'eventForm') {
       const id = crypto.randomUUID();
+      const selectedGroupIds = formData.getAll('audienceGroup').map(String);
+      const selectedGroups = myGroups.filter(group => selectedGroupIds.includes(group.id));
+      if (selectedGroups.length !== selectedGroupIds.length) throw new Error('One of the selected groups is no longer available. Please reopen the menu form.');
+      const memberUids = [...new Set([currentUser.uid, ...selectedGroups.flatMap(group => group.memberUids)])];
       const menu = {
         id, name: String(formData.get('name') || '').trim(), date: String(formData.get('date') || ''),
         note: String(formData.get('note') || '').trim(), accepting: true, contributions: [], collaborators: [],
-        ownerUid: currentUser.uid, memberUids: [currentUser.uid]
+        ownerUid: currentUser.uid, memberUids,
+        audienceGroupIds: selectedGroups.map(group => group.id),
+        audienceGroupNames: selectedGroups.map(group => group.name),
+        directInviteUids: []
       };
       await setDoc(ref('menus', id), { ...menu, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       app.state.events.unshift(menu);
@@ -330,6 +460,7 @@ async function handleSubmit(event) {
       if (friend.uid === currentUser.uid) throw new Error('That is your own friend code.');
       await updateDoc(ref('menus', eventId), {
         memberUids: arrayUnion(friend.uid),
+        directInviteUids: arrayUnion(friend.uid),
         collaborators: arrayUnion(code),
         updatedAt: serverTimestamp()
       });
@@ -386,6 +517,41 @@ async function connectFriend(code) {
 
 async function handleClick(event) {
   const target = event.target;
+  if (target.closest('#newEvent')) { renderEventGroupOptions(); return; }
+  const groupDayButton = target.closest('[data-group-day]');
+  if (groupDayButton && currentUser) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const group = myGroups.find(item => item.id === groupDayButton.dataset.groupDay);
+    const dayIndex = Number(groupDayButton.dataset.index);
+    if (group && dayIndex >= 0 && dayIndex < 7) {
+      group.availability[dayIndex] = !group.availability[dayIndex];
+      groupDayButton.classList.toggle('open', group.availability[dayIndex]);
+      groupDayButton.setAttribute('aria-pressed', String(group.availability[dayIndex]));
+    }
+    return;
+  }
+  const deleteGroupButton = target.closest('[data-delete-group]');
+  if (deleteGroupButton && currentUser) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const groupId = deleteGroupButton.dataset.deleteGroup;
+    if (!confirm('Delete this group? People will stop seeing its availability, and access to its group-shared party menus will be removed.')) return;
+    const oldGroups = myGroups;
+    myGroups = myGroups.filter(group => group.id !== groupId);
+    try {
+      await syncGroupMenus();
+      const batch = writeBatch(db);
+      batch.delete(ref('groupAvailability', `${currentUser.uid}__${groupId}`));
+      batch.delete(ref('groups', groupId));
+      await batch.commit();
+      renderPrivacyGroups(); renderEventGroupOptions();
+      toast('Group deleted and its shared menu access updated.');
+    } catch (error) {
+      myGroups = oldGroups;
+      renderPrivacyGroups();
+      toast(friendlyError(error));
+    }
+    return;
+  }
   const cancelButton = target.closest('button[value="cancel"]');
   if (cancelButton?.form?.method === 'dialog') {
     event.preventDefault(); event.stopImmediatePropagation();
@@ -453,8 +619,12 @@ async function handleClick(event) {
 }
 
 function decorateRenderedApp() {
+  const oldAvailability = document.querySelector('#collabProfile .collab-profile > div:nth-child(2)');
+  if (currentUser && oldAvailability) {
+    oldAvailability.innerHTML = '<div class="eyebrow">Dinner availability</div><h3 class="profile-heading">Shared by group only</h3><p class="profile-note">Your open evenings are now managed separately for each group below. People outside a group cannot see its availability.</p>';
+  }
   const profileNote = document.querySelector('#collabProfile .profile-note');
-  if (currentUser && profileNote) profileNote.textContent = 'Your account, friend code, and dinner availability are synced through Firebase.';
+  if (currentUser && profileNote) profileNote.textContent = 'Your account and friend code are synced through Firebase. Availability is shared only with selected groups.';
   const localNote = document.querySelector('#eventDetail .local-note');
   if (currentUser && localNote) localNote.innerHTML = '<b>Shared menu:</b> changes appear for everyone added by the host.';
   const inviteButton = document.getElementById('inviteLater');
@@ -472,6 +642,7 @@ function decorateRenderedApp() {
     const formInput = document.querySelector('#collabEventForm input[name="code"]');
     if (formInput) formInput.placeholder = 'Friend code (DT-...)';
   }
+  renderPrivacyGroups();
 }
 
 function startFirebaseBridge() {

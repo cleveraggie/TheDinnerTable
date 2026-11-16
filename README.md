@@ -13,7 +13,7 @@ Serve the project over HTTP (for example, with GitHub Pages or a simple local st
 - `app.js` — recipe, planning, and shopping-list behavior
 - `firebase-config.js` — public Firebase Web App configuration
 - `firebase-bridge.js` — Firebase Authentication and live collaboration
-- `firestore.rules` — access rules for profiles, friend codes, friendships, and party menus
+- `firestore.rules` — access rules for profiles, friend codes, private groups, availability, and party menus
 - `README.md` — project overview and setup
 - `.gitignore` — common local/editor files excluded from Git
 
@@ -28,11 +28,13 @@ Serve the project over HTTP (for example, with GitHub Pages or a simple local st
 - Party menus with host controls and a guest contribution preview
 - Party dates shown on the weekly calendar, reserving that day from regular meals
 - Firebase email/password and Google accounts
-- Friend codes, dinner availability, and connected-friend availability synced through Firestore
-- Shared party menus that hosts can invite collaborators to by friend code
+- Friend codes and private groups synced through Firestore
+- Availability stored separately for each group, so a Thursday marked open for Family is not visible to other groups
+- Party menus can be created for selected groups; changing or deleting a group updates access on group-shared menus
+- Group availability is stored in scoped share documents, not in friend-code records
 - Browser-local persistence
 
-Recipes, weekly meal plans, and shopping lists remain local to each browser. Accounts, friend codes, availability, and shared party menus use Firebase Authentication and Cloud Firestore.
+Recipes, weekly meal plans, and shopping lists remain local to each browser. Accounts, friend codes, private groups, group-specific availability, and shared party menus use Firebase Authentication and Cloud Firestore.
 
 For recipe imports that are blocked by browser security, deploy the free Cloudflare Worker in `worker/`, then save its URL in **Settings → Recipe import service**. The Worker reads recipe structured data and falls back to Jina Reader. Both services receive the public recipe URL. Pages that require sign-in or do not expose clear ingredient and direction sections can still fail.
 
@@ -43,7 +45,7 @@ The web app is registered as `The Dinner Table` in Firebase project `thedinnerta
 1. In **Authentication → Sign-in method**, enable **Email/Password** and **Google**. Phone sign-in is intentionally not used because SMS authentication requires billing and charges per message.
 2. In **Authentication → Settings → Authorized domains**, add `cleveraggie.github.io` so the GitHub Pages app can sign users in.
 3. Create the **Standard** Cloud Firestore database in `us-south1 (Dallas)` and choose production mode. Scheduled backups remain off on Spark.
-4. In Firestore, open **Rules**, replace the rules with the contents of `firestore.rules`, and publish them. The database stays closed until these rules are published.
+4. In Firestore, open **Rules**, replace the rules with the contents of `firestore.rules`, and publish them. The rules keep group records owner-private and allow availability reads only for the owner and selected group members.
 5. Upload the updated root files to GitHub Pages: `index.html`, `app.js`, `styles.css`, `firebase-config.js`, and `firebase-bridge.js`. Keep `firestore.rules` in the repository for reference and paste it into the Firebase Rules editor.
 
 Spark includes no-cost Authentication providers such as email/password and Google, plus Firestore's free quota. Firestore currently includes 1 GiB stored data, 50,000 reads/day, and 20,000 writes/day; on Spark, a service pauses if its free quota is exceeded until the quota resets. The recipe importer remains a separate Cloudflare Worker, so this setup does not require enabling Firebase billing.
