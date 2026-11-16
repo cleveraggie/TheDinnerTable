@@ -29,7 +29,9 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 
 Party menus, friend codes, and availability currently run as a local prototype: data stays in the current browser. Firebase still needs to be connected before accounts, verified friend connections, shared availability, and live cross-device collaboration will work.
 
-The recipe importer first looks for structured recipe data, then sends the public URL to Jina Reader when direct browser access fails. The URL is shared with that service for the fallback. Pages that require sign-in or do not expose clear ingredient and direction sections can still fail to import.
+For recipe imports that are blocked by browser security, deploy the free Cloudflare Worker in `worker/`, then save its URL in **Settings → Recipe import service**. The Worker reads recipe structured data and falls back to Jina Reader. Both services receive the public recipe URL. Pages that require sign-in or do not expose clear ingredient and direction sections can still fail.
+
+Firebase is not connected yet. To start on the free Spark plan, create a Firebase project, register a Web App, enable Email/Password Authentication and Firestore, then provide the public Web App config values (`apiKey`, `authDomain`, `projectId`, and `appId`). Cloud Functions are unavailable on Spark; the importer Worker is kept separate so it does not require enabling Firebase billing.
 
 ## Publish with GitHub Pages
 

@@ -1,0 +1,7 @@
+name = "the-dinner-table-recipe-importer"
+main = "src/index.js"
+compatibility_date = "2026-11-16"
+
+[vars]
+# After publishing the app, restrict this to its origin, e.g. https://your-name.github.io
+ALLOWED_ORIGINS = "*"
