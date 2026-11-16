@@ -17,6 +17,7 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 ## Current features
 
 - Recipe box with source, ingredients, notes, and search
+- Recipe categories with filtering, plus a detail view with saved ingredients and original recipe links
 - Seven-day meal plan with breakfast, lunch, and dinner slots
 - Shopping list assembled from recipes planned for the displayed week
 - Manually added shopping items and checkboxes
