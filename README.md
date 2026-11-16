@@ -18,6 +18,7 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 
 - Recipe box with source, ingredients, notes, and search
 - Recipe categories with filtering, plus a detail view with saved ingredients and original recipe links
+- Recipe link importer for pages that expose recipe data and permit browser access
 - Seven-day meal plan with breakfast, lunch, and dinner slots
 - Shopping list assembled from recipes planned for the displayed week
 - Manually added shopping items and checkboxes
@@ -27,6 +28,8 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 - Browser-local persistence
 
 Party menus, friend codes, and availability currently run as a local prototype: data stays in the current browser. Firebase still needs to be connected before accounts, verified friend connections, shared availability, and live cross-device collaboration will work.
+
+The recipe importer reads structured recipe data from the page. Some publishers block browser imports or require sign-in; those sources need a server-side importer. Firebase Cloud Functions require the billing-enabled Blaze plan.
 
 ## Publish with GitHub Pages
 
