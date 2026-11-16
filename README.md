@@ -21,9 +21,11 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 - Shopping list assembled from recipes planned for the displayed week
 - Manually added shopping items and checkboxes
 - Party menus with host controls and a guest contribution preview
+- Party dates shown on the weekly calendar, reserving that day from regular meals
+- Local collaboration profile with a friend-code preview and weekday dinner availability
 - Browser-local persistence
 
-Party menus currently run as a local prototype: event and contribution data stays in the current browser. Firebase still needs to be connected before guest invite links and live cross-device collaboration will work.
+Party menus, friend codes, and availability currently run as a local prototype: data stays in the current browser. Firebase still needs to be connected before accounts, verified friend connections, shared availability, and live cross-device collaboration will work.
 
 ## Publish with GitHub Pages
 
