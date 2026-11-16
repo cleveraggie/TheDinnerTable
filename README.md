@@ -20,7 +20,10 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 - Seven-day meal plan with breakfast, lunch, and dinner slots
 - Shopping list assembled from recipes planned for the displayed week
 - Manually added shopping items and checkboxes
+- Party menus with host controls and a guest contribution preview
 - Browser-local persistence
+
+Party menus currently run as a local prototype: event and contribution data stays in the current browser. Firebase still needs to be connected before guest invite links and live cross-device collaboration will work.
 
 ## Publish with GitHub Pages
 
