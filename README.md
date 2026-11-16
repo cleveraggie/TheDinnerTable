@@ -18,7 +18,7 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 
 - Recipe box with source, ingredients, notes, and search
 - Recipe categories with filtering, plus a detail view with saved ingredients and original recipe links
-- Recipe link importer for pages that expose recipe data and permit browser access
+- Recipe link importer that reads structured page data directly and falls back to Jina Reader when needed
 - Seven-day meal plan with breakfast, lunch, and dinner slots
 - Shopping list assembled from recipes planned for the displayed week
 - Manually added shopping items and checkboxes
@@ -29,7 +29,7 @@ Open `index.html` in a modern browser. There is no build step or dependency inst
 
 Party menus, friend codes, and availability currently run as a local prototype: data stays in the current browser. Firebase still needs to be connected before accounts, verified friend connections, shared availability, and live cross-device collaboration will work.
 
-The recipe importer reads structured recipe data from the page. Some publishers block browser imports or require sign-in; those sources need a server-side importer. Firebase Cloud Functions require the billing-enabled Blaze plan.
+The recipe importer first looks for structured recipe data, then sends the public URL to Jina Reader when direct browser access fails. The URL is shared with that service for the fallback. Pages that require sign-in or do not expose clear ingredient and direction sections can still fail to import.
 
 ## Publish with GitHub Pages
 
