@@ -59,6 +59,10 @@ const friendlyError = error => {
   };
   return messages[error?.code] || error?.message || 'Something went wrong. Please try again.';
 };
+const reportListenerError = (label, error) => {
+  console.error(`The Dinner Table could not load ${label}.`, error);
+  toast(`Could not load ${label}. ${friendlyError(error)}`);
+};
 const toast = message => app?.toast?.(message);
 
 function makeFriendCode() {
@@ -229,7 +233,7 @@ function subscribeToMenus() {
         app.render();
       }
     }
-  }, error => toast(friendlyError(error)));
+  }, error => reportListenerError('party menus', error));
 }
 
 function subscribeToFriends() {
@@ -253,7 +257,7 @@ function subscribeToFriends() {
     }));
     renderAuthPanel(); renderPrivacyGroups(); renderEventGroupOptions();
     app.save();
-  }, error => toast(friendlyError(error)));
+  }, error => reportListenerError('friend connections', error));
 }
 
 function subscribeToGroups() {
@@ -266,7 +270,7 @@ function subscribeToGroups() {
       availability: Array.isArray(item.data().availability) ? item.data().availability : Array(7).fill(false)
     }));
     renderPrivacyGroups(); renderEventGroupOptions();
-  }, error => toast(friendlyError(error)));
+  }, error => reportListenerError('your groups', error));
 }
 
 function subscribeToSharedAvailability() {
@@ -282,7 +286,7 @@ function subscribeToSharedAvailability() {
         days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].filter((_, index) => data.availability?.[index])
       }));
     renderAuthPanel(); renderPrivacyGroups();
-  }, error => toast(friendlyError(error)));
+  }, error => reportListenerError('shared dinner availability', error));
 }
 
 function renderEventGroupOptions() {
