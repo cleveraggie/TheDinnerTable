@@ -355,13 +355,16 @@ async function saveGroup(form, existingGroup = null) {
   batch.set(ref('groupAvailability', `${currentUser.uid}__${groupId}`), availabilityShare);
   await batch.commit();
   myGroups = [...myGroups.filter(item => item.id !== groupId), { ...group, createdAt: existingGroup?.createdAt || null }];
+  let refreshStep = 'party menu access';
   try {
     await syncGroupMenus();
+    refreshStep = 'shared meal access';
     await syncGroupMealShares();
   } catch (error) {
     renderPrivacyGroups(); renderEventGroupOptions();
     app?.render?.();
-    toast(`Group saved, but shared access could not be refreshed. ${friendlyError(error)}`);
+    console.error(`Group saved, but ${refreshStep} could not be refreshed.`, error);
+    toast(`Group saved, but ${refreshStep} could not be refreshed. ${friendlyError(error)}`);
     return;
   }
   renderPrivacyGroups(); renderEventGroupOptions();
@@ -659,9 +662,12 @@ async function handleClick(event) {
     if (!confirm('Delete this group? People will stop seeing its availability, and access to its group-shared party menus will be removed.')) return;
     const oldGroups = myGroups;
     myGroups = myGroups.filter(group => group.id !== groupId);
+    let deleteStep = 'party menu access';
     try {
       await syncGroupMenus();
+      deleteStep = 'shared meal access';
       await syncGroupMealShares(groupId);
+      deleteStep = 'group record';
       const batch = writeBatch(db);
       batch.delete(ref('groupAvailability', `${currentUser.uid}__${groupId}`));
       batch.delete(ref('groups', groupId));
@@ -672,7 +678,8 @@ async function handleClick(event) {
     } catch (error) {
       myGroups = oldGroups;
       renderPrivacyGroups();
-      toast(friendlyError(error));
+      console.error(`Group deletion stopped while updating ${deleteStep}.`, error);
+      toast(`Could not finish updating ${deleteStep}. ${friendlyError(error)}`);
     }
     return;
   }
