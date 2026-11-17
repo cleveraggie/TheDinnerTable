@@ -43,6 +43,12 @@ let myGroups = [];
 let stopGroups = null;
 let stopSharedAvailability = null;
 let stopSharedMeals = null;
+let stopPersonalData = [];
+let personalReady = { recipes: false, plans: false, shopping: false, settings: false };
+let personalBaseline = { recipes: new Map(), plans: new Map(), shopping: new Map(), settings: null };
+let applyingPersonalSnapshot = false;
+let personalSyncTimer = null;
+let syncingPersonalData = false;
 let loadingRemoteState = false;
 let deepLinkHandled = false;
 
@@ -66,6 +72,211 @@ const reportListenerError = (label, error) => {
   toast(`Could not load ${label}. ${friendlyError(error)}`);
 };
 const toast = message => app?.toast?.(message);
+const personalCacheKey = uid => `sunday-table-personal-${uid}`;
+const lastPersonalUserKey = 'sunday-table-last-cloud-user';
+const seedRecipeIds = new Set(['r1', 'r2', 'r3', 'r4']);
+
+const personalCollection = name => collection(db, 'userData', currentUser.uid, name);
+const personalDocument = (name, id) => doc(db, 'userData', currentUser.uid, name, id);
+const personalSettingsDocument = () => doc(db, 'userData', currentUser.uid, 'settings', 'app');
+
+function ensureShoppingItemIds() {
+  if (!app?.state?.items) return;
+  for (const item of app.state.items) if (!item.id) item.id = crypto.randomUUID();
+}
+
+function activatePersonalAccount(user) {
+  const uid = user.uid;
+  const previousUid = localStorage.getItem(lastPersonalUserKey);
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(personalCacheKey(uid)) || 'null'); } catch { cached = null; }
+  if (cached) {
+    app.state.recipes = Array.isArray(cached.recipes) ? cached.recipes : [];
+    app.state.plans = cached.plans && typeof cached.plans === 'object' ? cached.plans : {};
+    app.state.items = Array.isArray(cached.items) ? cached.items : [];
+    app.weekOffset = Number(cached.weekOffset) || 0;
+    app.state.recipeImporterUrl = String(cached.recipeImporterUrl || '');
+  } else if (previousUid && previousUid !== uid) {
+    app.state.recipes = [];
+    app.state.plans = {};
+    app.state.items = [];
+    app.weekOffset = 0;
+    app.state.recipeImporterUrl = '';
+  }
+  ensureShoppingItemIds();
+  localStorage.setItem(lastPersonalUserKey, uid);
+  app.save();
+}
+
+function cachePersonalData() {
+  if (!currentUser || !app?.state) return;
+  ensureShoppingItemIds();
+  const state = app.state;
+  localStorage.setItem(personalCacheKey(currentUser.uid), JSON.stringify({
+    recipes: state.recipes || [], plans: state.plans || {}, items: state.items || [],
+    weekOffset: app.weekOffset || 0, recipeImporterUrl: state.recipeImporterUrl || ''
+  }));
+}
+
+function recipePayload(recipe) {
+  return {
+    name: String(recipe.name || ''), source: String(recipe.source || ''),
+    category: String(recipe.category || ''),
+    ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients : [],
+    instructions: Array.isArray(recipe.instructions) ? recipe.instructions : [],
+    notes: String(recipe.notes || ''), emoji: String(recipe.emoji || '🍽️'),
+    time: String(recipe.time || '')
+  };
+}
+
+function planPayload(meals) {
+  return (Array.isArray(meals) ? meals : []).map(meal => ({
+    id: String(meal.id || ''), recipe: String(meal.recipe || ''), meal: String(meal.meal || '')
+  }));
+}
+
+function shoppingPayload(item, position) {
+  return { name: String(item.name || ''), qty: String(item.qty || ''), checked: Boolean(item.checked), position };
+}
+
+function personalSnapshot(name, snapshot) {
+  const docs = snapshot.docs;
+  personalBaseline[name] = new Map(docs.map(item => [item.id, item.data()]));
+  if (name === 'recipes') {
+    const local = Array.isArray(app.state.recipes) ? app.state.recipes : [];
+    const remote = docs.filter(item => !item.data().deleted).map(item => ({ id: item.id, ...recipePayload(item.data()) }));
+    const remoteIds = new Set(docs.map(item => item.id));
+    const cloudKeys = new Set(remote.map(item => `${item.name || ''}\n${item.source || ''}`.toLowerCase()));
+    const localOnly = local.filter(item => item.id && !remoteIds.has(item.id) &&
+      (docs.length === 0 || !seedRecipeIds.has(item.id)) &&
+      !cloudKeys.has(`${item.name || ''}\n${item.source || ''}`.toLowerCase()));
+    app.state.recipes = [...remote, ...localOnly];
+  } else if (name === 'plans') {
+    const merged = { ...(app.state.plans || {}) };
+    for (const item of docs) {
+      if (item.data().deleted) delete merged[item.id];
+      else merged[item.id] = planPayload(item.data().meals);
+    }
+    app.state.plans = merged;
+  } else if (name === 'shopping') {
+    ensureShoppingItemIds();
+    const local = Array.isArray(app.state.items) ? app.state.items : [];
+    const remote = docs.filter(item => !item.data().deleted)
+      .sort((a, b) => Number(a.data().position || 0) - Number(b.data().position || 0))
+      .map(item => ({ id: item.id, name: String(item.data().name || ''), qty: String(item.data().qty || ''), checked: Boolean(item.data().checked) }));
+    const remoteIds = new Set(docs.map(item => item.id));
+    const remoteNames = new Set(remote.map(item => `${item.name}\n${item.qty}`.toLowerCase()));
+    const localOnly = local.filter(item => !remoteIds.has(item.id) && !remoteNames.has(`${item.name || ''}\n${item.qty || ''}`.toLowerCase()));
+    app.state.items = [...remote, ...localOnly];
+  }
+  personalReady[name] = !snapshot.metadata?.fromCache;
+  applyingPersonalSnapshot = true;
+  try { app.save(); } finally { applyingPersonalSnapshot = false; }
+  if (Object.values(personalReady).every(Boolean)) schedulePersonalSync();
+}
+
+function personalSettingsSnapshot(snapshot) {
+  personalBaseline.settings = snapshot.exists() ? snapshot.data() : null;
+  if (snapshot.exists()) {
+    const data = snapshot.data();
+    app.weekOffset = Number(data.weekOffset) || 0;
+    app.state.recipeImporterUrl = String(data.recipeImporterUrl || '');
+  }
+  personalReady.settings = !snapshot.metadata?.fromCache;
+  applyingPersonalSnapshot = true;
+  try { app.save(); } finally { applyingPersonalSnapshot = false; }
+  if (Object.values(personalReady).every(Boolean)) schedulePersonalSync();
+}
+
+function subscribeToPersonalData() {
+  stopPersonalData.forEach(stop => stop?.());
+  personalReady = { recipes: false, plans: false, shopping: false, settings: false };
+  personalBaseline = { recipes: new Map(), plans: new Map(), shopping: new Map(), settings: null };
+  stopPersonalData = [
+    onSnapshot(personalCollection('recipes'), snapshot => personalSnapshot('recipes', snapshot), error => reportListenerError('saved recipes', error)),
+    onSnapshot(personalCollection('plans'), snapshot => personalSnapshot('plans', snapshot), error => reportListenerError('meal plans', error)),
+    onSnapshot(personalCollection('shopping'), snapshot => personalSnapshot('shopping', snapshot), error => reportListenerError('shopping list', error)),
+    onSnapshot(personalSettingsDocument(), snapshot => personalSettingsSnapshot(snapshot), error => reportListenerError('app settings', error))
+  ];
+}
+
+function schedulePersonalSync() {
+  if (!currentUser || !Object.values(personalReady).every(Boolean) || applyingPersonalSnapshot) return;
+  clearTimeout(personalSyncTimer);
+  personalSyncTimer = setTimeout(() => syncPersonalData().catch(error => {
+    console.error('Could not sync personal app data to Firebase.', error);
+    toast(`Your changes are saved on this device, but Firebase could not sync them. ${friendlyError(error)}`);
+  }), 500);
+}
+
+function activeRecipeRecords() {
+  return new Map((app.state.recipes || []).filter(recipe => recipe.id).map(recipe => [String(recipe.id), recipePayload(recipe)]));
+}
+
+function activePlanRecords() {
+  return new Map(Object.entries(app.state.plans || {}).map(([date, meals]) => [date, planPayload(meals)]));
+}
+
+function activeShoppingRecords() {
+  ensureShoppingItemIds();
+  return new Map((app.state.items || []).map((item, index) => [String(item.id), shoppingPayload(item, index)]));
+}
+
+async function writePersonalOperations(name, operations) {
+  for (let start = 0; start < operations.length; start += 400) {
+    const batch = writeBatch(db);
+    const chunk = operations.slice(start, start + 400);
+    for (const operation of chunk) batch.set(personalDocument(name, operation.id), { ...operation.data, updatedAt: serverTimestamp() });
+    await batch.commit();
+    for (const operation of chunk) personalBaseline[name].set(operation.id, operation.data);
+  }
+}
+
+function diffPersonalRecords(name, current, baseline, payloadForCloud) {
+  const operations = [];
+  for (const [id, value] of current) {
+    const remote = baseline.get(id);
+    const data = payloadForCloud(value);
+    const remotePayload = remote && !remote.deleted ? payloadForCloud(remote) : null;
+    if (!remotePayload || JSON.stringify(data) !== JSON.stringify(remotePayload)) operations.push({ id, data: { ...data, deleted: false } });
+  }
+  for (const [id, remote] of baseline) {
+    if (!remote.deleted && !current.has(id)) operations.push({ id, data: { deleted: true } });
+  }
+  return operations;
+}
+
+async function syncPersonalData() {
+  if (!currentUser || syncingPersonalData || !Object.values(personalReady).every(Boolean)) return;
+  syncingPersonalData = true;
+  try {
+    await writePersonalOperations('recipes', diffPersonalRecords('recipes', activeRecipeRecords(), personalBaseline.recipes, recipePayload));
+    await writePersonalOperations('plans', diffPersonalRecords('plans', activePlanRecords(), personalBaseline.plans, value => ({ meals: planPayload(Array.isArray(value) ? value : value.meals) })));
+    await writePersonalOperations('shopping', diffPersonalRecords('shopping', activeShoppingRecords(), personalBaseline.shopping, value => shoppingPayload(value, value.position)));
+    const settings = { weekOffset: Number(app.weekOffset) || 0, recipeImporterUrl: String(app.state.recipeImporterUrl || '') };
+    const remoteSettings = personalBaseline.settings;
+    if (!remoteSettings || remoteSettings.weekOffset !== settings.weekOffset || String(remoteSettings.recipeImporterUrl || '') !== settings.recipeImporterUrl) {
+      await setDoc(personalSettingsDocument(), { ...settings, updatedAt: serverTimestamp() });
+      personalBaseline.settings = settings;
+    }
+    cachePersonalData();
+  } finally {
+    syncingPersonalData = false;
+  }
+}
+
+function wrapAppSaveWithPersonalSync() {
+  if (app.personalSyncWrapped) return;
+  const saveLocally = app.save;
+  app.save = (...args) => {
+    ensureShoppingItemIds();
+    const result = saveLocally(...args);
+    cachePersonalData();
+    if (!applyingPersonalSnapshot) schedulePersonalSync();
+    return result;
+  };
+  app.personalSyncWrapped = true;
+}
 
 function makeFriendCode() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -119,7 +330,7 @@ function renderAuthPanel() {
   const name = currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member';
   panel.innerHTML = `<div class="card firebase-auth-card firebase-signed-in">
     <div class="eyebrow">Signed in</div><div class="firebase-account-row"><div><h3>${escapeHtml(name)}</h3><p class="profile-note">${escapeHtml(currentUser.email || 'Google account')}</p></div><button class="btn small" id="firebaseSignOut" type="button">Sign out</button></div>
-    <p class="firebase-friend-note">Your friend code is saved to Firebase. Availability is shared only with the groups you choose below.</p>
+    <p class="firebase-friend-note">Your profile, recipes, meal plans, and shopping list are saved to Firebase and follow your account across devices. Availability is shared only with the groups you choose below.</p>
     <p id="firebaseAuthMessage" class="firebase-auth-message" aria-live="polite"></p>
   </div>`;
   panel.querySelector('#firebaseSignOut').addEventListener('click', async () => {
@@ -486,8 +697,32 @@ function decorateDayMealSharing() {
 
 async function handleAuthState(user) {
   const signedOutFromAccount = Boolean(currentUser && !user);
+  const switchingAccounts = Boolean(currentUser && user && currentUser.uid !== user.uid);
+  if (signedOutFromAccount || switchingAccounts) cachePersonalData();
+  if (switchingAccounts) {
+    stopMenus?.(); stopMenus = null;
+    stopFriends?.(); stopFriends = null;
+    stopGroups?.(); stopGroups = null;
+    stopSharedAvailability?.(); stopSharedAvailability = null;
+    stopSharedMeals?.(); stopSharedMeals = null;
+    friendAvailability = [];
+    sharedMeals = [];
+    friendEntries = [];
+    myGroups = [];
+    currentProfile = null;
+    app.state.events = (app.state.events || []).filter(event => !event.ownerUid || event.ownerUid === user.uid);
+    delete app.state.profile;
+    delete app.state.availability;
+  }
+  stopPersonalData.forEach(stop => stop?.());
+  stopPersonalData = [];
+  clearTimeout(personalSyncTimer);
+  personalReady = { recipes: false, plans: false, shopping: false, settings: false };
+  personalBaseline = { recipes: new Map(), plans: new Map(), shopping: new Map(), settings: null };
   currentUser = user;
   if (user) {
+    activatePersonalAccount(user);
+    subscribeToPersonalData();
     try {
       await ensureUserProfile(user);
       await migrateLocalMenus();
@@ -840,9 +1075,11 @@ function startFirebaseBridge() {
   app = window.DinnerTableApp;
   const panel = document.getElementById('firebaseAuthPanel');
   if (!app || !panel) return;
+  wrapAppSaveWithPersonalSync();
+  window.addEventListener('online', schedulePersonalSync);
   document.addEventListener('submit', handleSubmit, true);
   document.addEventListener('click', handleClick, true);
-  window.DinnerTableFirebase = { afterRender: decorateRenderedApp };
+  window.DinnerTableFirebase = { afterRender: decorateRenderedApp, get signedIn() { return Boolean(currentUser); } };
   onAuthStateChanged(auth, user => handleAuthState(user).catch(error => {
     renderAuthPanel(); setAuthMessage(friendlyError(error), true);
   }));
