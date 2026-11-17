@@ -372,14 +372,15 @@ async function saveGroup(form, existingGroup = null) {
   toast(existingGroup ? 'Group saved. Its party menu access is updated too.' : 'Group created. Choose its open evenings below.');
 }
 
-async function syncGroupMenus() {
+async function syncGroupMenus(removedUid = null) {
   const snapshot = await getDocs(query(collection(db, 'menus'), where('memberUids', 'array-contains', currentUser.uid)));
   const affected = snapshot.docs.filter(item => item.data().ownerUid === currentUser.uid && Array.isArray(item.data().audienceGroupIds));
   for (const item of affected) {
     const menu = item.data();
     const groupIds = menu.audienceGroupIds.filter(id => myGroups.some(group => group.id === id));
     const selectedGroups = myGroups.filter(group => groupIds.includes(group.id));
-    const directInviteUids = Array.isArray(menu.directInviteUids) ? menu.directInviteUids : [];
+    const directInviteUids = (Array.isArray(menu.directInviteUids) ? menu.directInviteUids : [])
+      .filter(uid => uid !== removedUid);
     const memberUids = [...new Set([currentUser.uid, ...directInviteUids, ...selectedGroups.flatMap(group => group.memberUids)])];
     await updateDoc(ref('menus', item.id), {
       audienceGroupIds: groupIds,
@@ -640,6 +641,50 @@ async function connectFriend(code) {
   toast(`Connected with ${friend.displayName || code}.`);
 }
 
+async function removeFriend(friend) {
+  if (!currentUser || !friend?.uid) return;
+  const displayName = friend.displayName || 'this friend';
+  const confirmed = confirm(`Disconnect ${displayName}? They will be removed from groups and party menus you manage. Groups or menus they manage may still include you until they update them.`);
+  if (!confirmed) return;
+
+  const updatedGroups = myGroups.map(group => ({
+    ...group,
+    memberUids: group.memberUids.filter(uid => uid !== friend.uid)
+  }));
+  const changedGroups = updatedGroups.filter((group, index) => group.memberUids.length !== myGroups[index].memberUids.length);
+  try {
+    if (changedGroups.length) {
+      const batch = writeBatch(db);
+      for (const group of changedGroups) {
+        batch.update(ref('groups', group.id), { memberUids: group.memberUids, updatedAt: serverTimestamp() });
+        batch.set(ref('groupAvailability', `${currentUser.uid}__${group.id}`), {
+          ownerUid: currentUser.uid,
+          groupId: group.id,
+          groupName: group.name,
+          displayName: currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member',
+          visibleTo: group.memberUids,
+          availability: group.availability,
+          updatedAt: serverTimestamp()
+        });
+      }
+      await batch.commit();
+    }
+    myGroups = updatedGroups;
+    await syncGroupMenus(friend.uid);
+    await syncGroupMealShares();
+    await deleteDoc(ref('friendships', pairId(currentUser.uid, friend.uid)));
+    friendEntries = friendEntries.filter(item => item.uid !== friend.uid);
+    app.state.profile.friends = (app.state.profile.friends || []).filter(code => code !== friend.code);
+    friendAvailability = friendAvailability.filter(item => item.code !== friend.uid);
+    sharedMeals = sharedMeals.filter(item => item.ownerUid !== friend.uid);
+    renderAuthPanel(); renderPrivacyGroups(); renderEventGroupOptions(); app.save();
+    toast(`${displayName} was removed from your groups and menus.`);
+  } catch (error) {
+    console.error('Could not remove this friend and update shared access.', error);
+    toast(friendlyError(error));
+  }
+}
+
 async function handleClick(event) {
   const target = event.target;
   if (target.closest('#newEvent')) { renderEventGroupOptions(); return; }
@@ -681,6 +726,13 @@ async function handleClick(event) {
       console.error(`Group deletion stopped while updating ${deleteStep}.`, error);
       toast(`Could not finish updating ${deleteStep}. ${friendlyError(error)}`);
     }
+    return;
+  }
+  const removeFriendButton = target.closest('[data-remove-friend]');
+  if (removeFriendButton && currentUser) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const friend = friendEntries.find(item => item.uid === removeFriendButton.dataset.removeFriend);
+    if (friend) await removeFriend(friend);
     return;
   }
   const cancelButton = target.closest('button[value="cancel"]');
@@ -751,6 +803,13 @@ async function handleClick(event) {
 
 function decorateRenderedApp() {
   decorateDayMealSharing();
+  const connectedFriends = document.querySelector('#collabProfile .friend-pills');
+  if (currentUser && connectedFriends) {
+    connectedFriends.classList.add('connected-friend-list');
+    connectedFriends.innerHTML = friendEntries.length
+      ? friendEntries.map(friend => `<div class="connected-friend"><span>${escapeHtml(friend.displayName || 'Dinner Table friend')}</span><button class="btn small danger" type="button" data-remove-friend="${escapeHtml(friend.uid)}">Remove</button></div>`).join('')
+      : '<span class="profile-note">No connected friends yet.</span>';
+  }
   const oldAvailability = document.querySelector('#collabProfile .collab-profile > div:nth-child(2)');
   if (currentUser && oldAvailability) {
     oldAvailability.innerHTML = '<div class="eyebrow">Dinner availability</div><h3 class="profile-heading">Shared by group only</h3><p class="profile-note">Your open evenings are now managed separately for each group below. People outside a group cannot see its availability.</p>';
