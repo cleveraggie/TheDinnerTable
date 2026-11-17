@@ -37,10 +37,12 @@ let currentProfile = null;
 let stopMenus = null;
 let stopFriends = null;
 let friendAvailability = [];
+let sharedMeals = [];
 let friendEntries = [];
 let myGroups = [];
 let stopGroups = null;
 let stopSharedAvailability = null;
+let stopSharedMeals = null;
 let loadingRemoteState = false;
 let deepLinkHandled = false;
 
@@ -270,6 +272,7 @@ function subscribeToGroups() {
       availability: Array.isArray(item.data().availability) ? item.data().availability : Array(7).fill(false)
     }));
     renderPrivacyGroups(); renderEventGroupOptions();
+    app?.render?.();
   }, error => reportListenerError('your groups', error));
 }
 
@@ -283,10 +286,20 @@ function subscribeToSharedAvailability() {
         code: data.ownerUid,
         displayName: data.displayName || 'Dinner Table member',
         groupName: data.groupName || 'Shared group',
+        availability: Array.isArray(data.availability) ? data.availability : Array(7).fill(false),
         days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].filter((_, index) => data.availability?.[index])
       }));
-    renderAuthPanel(); renderPrivacyGroups();
+    renderAuthPanel(); renderPrivacyGroups(); app?.render?.();
   }, error => reportListenerError('shared dinner availability', error));
+}
+
+function subscribeToSharedMeals() {
+  stopSharedMeals?.();
+  const mealsQuery = query(collection(db, 'groupMeals'), where('visibleTo', 'array-contains', currentUser.uid));
+  stopSharedMeals = onSnapshot(mealsQuery, snapshot => {
+    sharedMeals = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+    app?.render?.();
+  }, error => reportListenerError('shared meal plans', error));
 }
 
 function renderEventGroupOptions() {
@@ -342,8 +355,17 @@ async function saveGroup(form, existingGroup = null) {
   batch.set(ref('groupAvailability', `${currentUser.uid}__${groupId}`), availabilityShare);
   await batch.commit();
   myGroups = [...myGroups.filter(item => item.id !== groupId), { ...group, createdAt: existingGroup?.createdAt || null }];
-  await syncGroupMenus();
+  try {
+    await syncGroupMenus();
+    await syncGroupMealShares();
+  } catch (error) {
+    renderPrivacyGroups(); renderEventGroupOptions();
+    app?.render?.();
+    toast(`Group saved, but shared access could not be refreshed. ${friendlyError(error)}`);
+    return;
+  }
   renderPrivacyGroups(); renderEventGroupOptions();
+  app?.render?.();
   toast(existingGroup ? 'Group saved. Its party menu access is updated too.' : 'Group created. Choose its open evenings below.');
 }
 
@@ -365,6 +387,99 @@ async function syncGroupMenus() {
   }
 }
 
+async function syncGroupMealShares(deletedGroupId = null) {
+  const snapshot = await getDocs(query(collection(db, 'groupMeals'), where('visibleTo', 'array-contains', currentUser.uid)));
+  for (const item of snapshot.docs) {
+    const share = item.data();
+    if (share.ownerUid !== currentUser.uid) continue;
+    const group = myGroups.find(candidate => candidate.id === share.groupId);
+    if (!group || share.groupId === deletedGroupId) {
+      await deleteDoc(ref('groupMeals', item.id));
+    } else {
+      await updateDoc(ref('groupMeals', item.id), {
+        groupName: group.name,
+        displayName: currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member',
+        visibleTo: group.memberUids,
+        updatedAt: serverTimestamp()
+      });
+    }
+  }
+}
+
+async function saveDayMealSharing(dayCard) {
+  const date = dayCard.dataset.date;
+  const planKey = dayCard.dataset.planKey;
+  const selectedGroupIds = [...dayCard.querySelectorAll('[data-share-group]:checked')].map(input => input.value);
+  const meals = (app.state.plans[planKey] || []).map(meal => {
+    const recipe = app.state.recipes.find(item => item.id === meal.recipe);
+    return recipe ? { meal: meal.meal, name: recipe.name } : null;
+  }).filter(Boolean);
+  const batch = writeBatch(db);
+  const currentShares = sharedMeals.filter(item => item.ownerUid === currentUser.uid && item.date === date);
+  const selectedGroups = myGroups.filter(group => selectedGroupIds.includes(group.id));
+  if (!selectedGroups.length && !currentShares.length) {
+    toast('Choose at least one group to share this day.');
+    return;
+  }
+  for (const group of selectedGroups) {
+    const shareId = `${currentUser.uid}__${group.id}__${date}`;
+    batch.set(ref('groupMeals', shareId), {
+      ownerUid: currentUser.uid,
+      groupId: group.id,
+      groupName: group.name,
+      displayName: currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member',
+      visibleTo: group.memberUids,
+      date,
+      meals,
+      updatedAt: serverTimestamp()
+    });
+  }
+  for (const previous of currentShares) {
+    if (!selectedGroupIds.includes(previous.groupId)) batch.delete(ref('groupMeals', previous.id));
+  }
+  await batch.commit();
+  toast(selectedGroups.length ? 'Meal sharing updated for this day.' : 'This day is no longer shared.');
+}
+
+function decorateDayMealSharing() {
+  document.querySelectorAll('#weekGrid .day').forEach(dayCard => {
+    if (!dayCard.dataset.date || !dayCard.dataset.planKey) return;
+    const date = dayCard.dataset.date;
+    dayCard.querySelector('.day-share-tools')?.remove();
+    let tools = null;
+    if (currentUser) {
+      const sharedGroupIds = new Set(sharedMeals
+        .filter(item => item.ownerUid === currentUser.uid && item.date === date)
+        .map(item => item.groupId));
+      const choices = myGroups.length
+        ? myGroups.map(group => `<label class="day-share-choice"><input type="checkbox" data-share-group value="${escapeHtml(group.id)}" ${sharedGroupIds.has(group.id) ? 'checked' : ''}> ${escapeHtml(group.name)}</label>`).join('')
+        : '<span class="profile-note">Create a group in Settings to share with friends.</span>';
+      tools = document.createElement('details');
+      tools.className = 'day-share-tools';
+      tools.innerHTML = `<summary>Share meal plans</summary><p class="profile-note">Choose who can see what you’re cooking on this day.</p><div class="day-share-choices">${choices}</div><button class="btn small" type="button" data-save-day-share>Save sharing</button>`;
+      dayCard.querySelector('.day-head')?.after(tools);
+    }
+    let incoming = dayCard.querySelector('.shared-day-info');
+    if (incoming) incoming.remove();
+    const weekdayIndex = (new Date(`${date}T12:00:00`).getDay() + 6) % 7;
+    const availableFriends = currentUser ? friendAvailability.filter(friend => friend.availability[weekdayIndex]) : [];
+    const receivedMeals = currentUser ? sharedMeals.filter(item => item.ownerUid !== currentUser.uid && item.date === date) : [];
+    if (availableFriends.length || receivedMeals.length) {
+      incoming = document.createElement('div');
+      incoming.className = 'shared-day-info';
+      incoming.innerHTML = `${availableFriends.length ? `<div class="shared-day-section"><div class="shared-meal-heading">Friends available</div>${availableFriends.map(friend => `<div class="shared-meal-item"><span>${escapeHtml(friend.displayName)} · ${escapeHtml(friend.groupName)}</span></div>`).join('')}</div>` : ''}${receivedMeals.length ? `<div class="shared-day-section"><div class="shared-meal-heading">What friends are cooking</div>${receivedMeals.map(item => `<div class="shared-meal-group"><div class="shared-meal-heading">${escapeHtml(item.displayName || 'Friend')} · ${escapeHtml(item.groupName || 'Shared group')}</div>${(item.meals || []).length ? item.meals.map(meal => `<div class="shared-meal-item"><span>${escapeHtml(meal.meal || 'Meal')}</span>${escapeHtml(meal.name || '')}</div>`).join('') : '<div class="shared-meal-item">No meal planned yet</div>'}</div>`).join('')}</div>` : ''}`;
+      if (tools) tools.after(incoming);
+      else dayCard.querySelector('.day-head')?.after(incoming);
+    }
+  });
+  document.querySelectorAll('[data-save-day-share]').forEach(button => {
+    button.onclick = async () => {
+      try { await saveDayMealSharing(button.closest('.day')); }
+      catch (error) { toast(friendlyError(error)); }
+    };
+  });
+}
+
 async function handleAuthState(user) {
   const signedOutFromAccount = Boolean(currentUser && !user);
   currentUser = user;
@@ -376,6 +491,7 @@ async function handleAuthState(user) {
       subscribeToFriends();
       subscribeToGroups();
       subscribeToSharedAvailability();
+      subscribeToSharedMeals();
       renderAuthPanel();
     } catch (error) {
       renderAuthPanel();
@@ -386,7 +502,9 @@ async function handleAuthState(user) {
     stopFriends?.(); stopFriends = null;
     stopGroups?.(); stopGroups = null;
     stopSharedAvailability?.(); stopSharedAvailability = null;
+    stopSharedMeals?.(); stopSharedMeals = null;
     friendAvailability = [];
+    sharedMeals = [];
     friendEntries = [];
     myGroups = [];
     currentProfile = null;
@@ -543,11 +661,13 @@ async function handleClick(event) {
     myGroups = myGroups.filter(group => group.id !== groupId);
     try {
       await syncGroupMenus();
+      await syncGroupMealShares(groupId);
       const batch = writeBatch(db);
       batch.delete(ref('groupAvailability', `${currentUser.uid}__${groupId}`));
       batch.delete(ref('groups', groupId));
       await batch.commit();
       renderPrivacyGroups(); renderEventGroupOptions();
+      app?.render?.();
       toast('Group deleted and its shared menu access updated.');
     } catch (error) {
       myGroups = oldGroups;
@@ -623,6 +743,7 @@ async function handleClick(event) {
 }
 
 function decorateRenderedApp() {
+  decorateDayMealSharing();
   const oldAvailability = document.querySelector('#collabProfile .collab-profile > div:nth-child(2)');
   if (currentUser && oldAvailability) {
     oldAvailability.innerHTML = '<div class="eyebrow">Dinner availability</div><h3 class="profile-heading">Shared by group only</h3><p class="profile-note">Your open evenings are now managed separately for each group below. People outside a group cannot see its availability.</p>';

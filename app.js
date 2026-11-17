@@ -25,7 +25,7 @@ function renderWeek(){
           const entries=meals.filter(m=>m.meal===type);
           return `<div class="meal-slot"><div class="slot-label">${type}</div>${entries.map(m=>{const r=state.recipes.find(x=>x.id===m.recipe);return r?`<div class="meal-card">${esc(r.name)}<button class="remove" title="Remove" data-remove="${dayKey}|${m.id}">×</button></div>`:''}).join('')}<button class="add-meal" data-add="${dayKey}|${type}">＋ Add</button></div>`
         }).join('')}`;
-    return `<article class="day ${dateKey===now?'today':''}"><div class="day-head"><span class="day-name">${d.toLocaleDateString('en-US',{weekday:'short'})}</span><span class="day-date">${d.toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}</span></div>${dayContent}</article>`;
+    return `<article class="day ${dateKey===now?'today':''}" data-date="${dateKey}" data-plan-key="${dayKey}"><div class="day-head"><span class="day-name">${d.toLocaleDateString('en-US',{weekday:'short'})}</span><span class="day-date">${d.toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}</span></div>${dayContent}</article>`;
   }).join('');
   document.getElementById('planSummary').textContent=count?`${count} meal${count===1?'':'s'} on the calendar`:'Add meals during the week, or mark a day for a shared dinner.';
   grid.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>openPlan(...b.dataset.add.split('|')));
