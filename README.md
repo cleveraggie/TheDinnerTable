@@ -1,75 +1,45 @@
 # The Dinner Table
 
-A simple, local-first recipe organizer and weekly meal planner. Save recipes from around the web, put meals on the calendar, and collect ingredients into a checkable shopping list.
-
-## Run locally
-
-Serve the project over HTTP (for example, with GitHub Pages or a simple local static server) and open it in a modern browser. There is no build step or dependency installation. The Firebase bridge uses browser modules, so opening `index.html` directly as a `file://` URL will not load it correctly. Recipes, plans, and shopping lists are saved in that browser's local storage.
+A recipe organizer and meal planner for collecting recipes, planning meals, shopping, and sharing selected recipes and availability with friends.
 
 ## Project files
 
-- `index.html` — page structure and app entry point
+- `index.html` — page structure and dialogs
 - `styles.css` — layout and visual styles
-- `app.js` — recipe, planning, and shopping-list behavior
+- `app.js` — recipe, planning, shopping, and import behavior
 - `firebase-config.js` — public Firebase Web App configuration
-- `firebase-bridge.js` — Firebase Authentication and live collaboration
-- `firestore.rules` — access rules for profiles, friend codes, private groups, availability, and party menus
-- `README.md` — project overview and setup
-- `.gitignore` — common local/editor files excluded from Git
+- `firebase-bridge.js` — Firebase Authentication, account sync, groups, and sharing
+- `firestore.rules` — access rules for private account data and group sharing
+- `worker/` — optional Cloudflare Worker for recipe page imports
 
-## Current features
+## Features
 
-- Recipe box with source, ingredients, notes, and search
-- Recipe categories with filtering, plus a detail view with saved ingredients and original recipe links
-- Recipe link importer that reads structured page data directly and falls back to Jina Reader when needed
-- Seven-day meal plan with breakfast, lunch, and dinner slots
-- Shopping list assembled from recipes planned for the displayed week
-- Manually added shopping items and checkboxes
-- Party menus with host controls and a guest contribution preview
-- Party dates shown on the weekly calendar, reserving that day from regular meals
-- Firebase email/password and Google accounts
-- Friend codes and private groups synced through Firestore
-- Availability stored separately for each group, so a Thursday marked open for Family is not visible to other groups
-- Party menus can be created for selected groups; changing or deleting a group updates access on group-shared menus
-- Group availability is stored in scoped share documents, not in friend-code records
-- Browser-local persistence
+- Recipe box with categories, recipe details, and original links
+- Import recipes from public recipe pages, PDFs, and photos
+- PDF/photo text reading happens in the browser; the selected file itself is not uploaded
+- Review and edit extracted recipe details before saving
+- Save TikTok and Instagram links as recipe records, then add details manually
+- Share recipe snapshots with selected private groups and save friends’ shared recipes to your own box
+- Seven-day meal planning and a shopping list built from planned recipes
+- Firebase email/password and Google sign-in
+- Recipes, meal plans, shopping lists, and settings sync to the signed-in account across devices
+- Private friend groups with group-specific dinner availability
+- Party menus shared with selected groups
 
-Recipes, weekly meal plans, and shopping lists remain local to each browser. Accounts, friend codes, private groups, group-specific availability, and shared party menus use Firebase Authentication and Cloud Firestore.
+PDF imports use PDF.js to extract text or render pages for OCR when the PDF is scanned. Photo and scanned-page OCR use Tesseract.js. Both are loaded on demand from a CDN; they read files in the browser and require an internet connection at import time. Recipe extraction is a best effort, so check the review form before saving.
 
-For recipe imports that are blocked by browser security, deploy the free Cloudflare Worker in `worker/`, then save its URL in **Settings → Recipe import service**. The Worker reads recipe structured data and falls back to Jina Reader. Both services receive the public recipe URL. Pages that require sign-in or do not expose clear ingredient and direction sections can still fail.
+## Firebase setup
 
-## Firebase setup (Spark)
+The app is registered in Firebase project `thedinnertable-cd2aa`. The public Web App configuration is in `firebase-config.js`; never add a service-account key to this repository.
 
-The web app is registered as `The Dinner Table` in Firebase project `thedinnertable-cd2aa`. The public Web App config is in `firebase-config.js`; Firebase Web App config is intended to be included in client apps. Do not add a service-account key to this repository.
+1. In **Authentication → Sign-in method**, enable **Email/Password** and **Google**.
+2. In **Authentication → Settings → Authorized domains**, add the GitHub Pages domain used by the app.
+3. Create the **Standard** Cloud Firestore database in the chosen region.
+4. In Firestore, open **Rules**, replace the rules with the contents of `firestore.rules`, and publish them.
+5. Upload the updated app files to GitHub Pages: `index.html`, `app.js`, `styles.css`, `firebase-config.js`, and `firebase-bridge.js`.
 
-1. In **Authentication → Sign-in method**, enable **Email/Password** and **Google**. Phone sign-in is intentionally not used because SMS authentication requires billing and charges per message.
-2. In **Authentication → Settings → Authorized domains**, add `cleveraggie.github.io` so the GitHub Pages app can sign users in.
-3. Create the **Standard** Cloud Firestore database in `us-south1 (Dallas)` and choose production mode. Scheduled backups remain off on Spark.
-4. In Firestore, open **Rules**, replace the rules with the contents of `firestore.rules`, and publish them. The rules keep group records owner-private and allow availability reads only for the owner and selected group members.
-5. Upload the updated root files to GitHub Pages: `index.html`, `app.js`, `styles.css`, `firebase-config.js`, and `firebase-bridge.js`. Keep `firestore.rules` in the repository for reference and paste it into the Firebase Rules editor.
+The Firestore rules must be published for group recipes to be visible to selected group members. Keep `firestore.rules` in the repository as your reference copy.
 
-Spark includes no-cost Authentication providers such as email/password and Google, plus Firestore's free quota. Firestore currently includes 1 GiB stored data, 50,000 reads/day, and 20,000 writes/day; on Spark, a service pauses if its free quota is exceeded until the quota resets. The recipe importer remains a separate Cloudflare Worker, so this setup does not require enabling Firebase billing.
+## Recipe link imports
 
-## Publish with GitHub Pages
-
-1. Create a new repository on GitHub.
-2. In this project folder, add the repository as `origin` and push the `main` branch:
-
-   ```sh
-   git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.git
-   git add .
-   git commit -m "Build the first Dinner Table app version"
-   git push -u origin main
-   ```
-
-3. In the repository, open **Settings → Pages**. Select **Deploy from a branch**, choose `main` and `/ (root)`, then save.
-
-The app is static, so GitHub Pages can serve it directly. Data stays in each visitor's browser and does not sync between devices.
-
-## Ideas for next steps
-
-- Import structured recipes from recipe pages
-- Improve support for social links and recipes in captions/videos
-- Edit saved recipes and ingredient quantities
-- Export/import a backup or add account-based sync
-
+Direct recipe-page reading can be blocked by some sites. For those, deploy the Cloudflare Worker in `worker/` and save its URL in **Settings → Recipe import service**. TikTok and Instagram links can be saved even when ingredients and steps cannot be extracted. The app currently saves the link and recipe details; it does not download or store video files.

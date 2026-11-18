@@ -43,6 +43,8 @@ let myGroups = [];
 let stopGroups = null;
 let stopSharedAvailability = null;
 let stopSharedMeals = null;
+let stopRecipeShares = null;
+let sharedRecipeRecords = [];
 let stopPersonalData = [];
 let personalReady = { recipes: false, plans: false, shopping: false, settings: false };
 let personalBaseline = { recipes: new Map(), plans: new Map(), shopping: new Map(), settings: null };
@@ -513,6 +515,115 @@ function subscribeToSharedMeals() {
   }, error => reportListenerError('shared meal plans', error));
 }
 
+function subscribeToRecipeShares() {
+  stopRecipeShares?.();
+  const sharesQuery = query(collection(db, 'recipeShares'), where('visibleTo', 'array-contains', currentUser.uid));
+  stopRecipeShares = onSnapshot(sharesQuery, snapshot => {
+    sharedRecipeRecords = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+    renderSharedRecipes();
+  }, error => reportListenerError('shared recipes', error));
+}
+
+function renderSharedRecipes() {
+  const root = document.getElementById('sharedRecipesList');
+  if (!root) return;
+  const incoming = currentUser
+    ? sharedRecipeRecords.filter(item => item.ownerUid !== currentUser.uid)
+    : [];
+  root.innerHTML = `<section class="shared-recipes-section"><div class="shared-recipes-heading"><div><div class="eyebrow">From your friends</div><h3>Recipes shared with you</h3></div></div>${incoming.length ? `<div class="shared-recipes-grid">${incoming.map(recipe => `<article class="card shared-recipe-card"><div class="shared-recipe-top"><span class="recipe-category">${escapeHtml(recipe.groupName || 'Shared recipe')}</span><span class="shared-recipe-by">From ${escapeHtml(recipe.ownerName || 'a friend')}</span></div><h4>${escapeHtml(recipe.recipeName || 'Shared recipe')}</h4><div class="recipe-meta"><span>${(recipe.ingredients || []).length} ingredients</span><span>${(recipe.instructions || []).length} steps</span></div>${recipe.source ? `<a class="shared-recipe-link" href="${escapeHtml(recipe.source)}" target="_blank" rel="noopener noreferrer">Open original ↗</a>` : ''}<button type="button" class="btn small" data-save-shared-recipe="${escapeHtml(recipe.id)}">Save a copy</button></article>`).join('')}</div>` : `<p class="profile-note">${currentUser ? 'When a friend shares a recipe with one of your groups, it will appear here.' : 'Sign in to see recipes your friends share with your groups.'}</p>`}</section>`;
+}
+
+function openRecipeShareDialog(recipe) {
+  if (!currentUser) { toast('Sign in to share recipes with friends.'); return; }
+  if (!myGroups.length) { toast('Create a private group and add friends before sharing recipes.'); return; }
+  const form = document.getElementById('recipeShareForm');
+  form.elements.recipeId.value = recipe.id;
+  document.getElementById('recipeShareName').textContent = `Sharing “${recipe.name}”`;
+  const active = new Set(sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.recipeId === recipe.id).map(item => item.groupId));
+  document.getElementById('recipeShareGroups').innerHTML = myGroups.map(group => `<label class="recipe-share-group"><input type="checkbox" name="shareGroup" value="${escapeHtml(group.id)}" ${active.has(group.id) ? 'checked' : ''}><span><b>${escapeHtml(group.name)}</b><small>${Math.max(0, group.memberUids.length - 1)} friend${group.memberUids.length === 2 ? '' : 's'}</small></span></label>`).join('');
+  document.getElementById('recipeShareDialog').showModal();
+}
+
+async function saveRecipeShares(form) {
+  const recipeId = String(new FormData(form).get('recipeId') || '');
+  const recipe = app.state.recipes.find(item => item.id === recipeId);
+  if (!recipe) throw new Error('That recipe is no longer in your recipe box.');
+  const selectedIds = new Set(new FormData(form).getAll('shareGroup').map(String));
+  const groups = myGroups.filter(group => selectedIds.has(group.id));
+  if (groups.length !== selectedIds.size) throw new Error('A selected group is no longer available. Reopen the sharing window and try again.');
+  const existing = sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.recipeId === recipeId);
+  const selectedGroupIds = new Set(groups.map(group => group.id));
+  const batch = writeBatch(db);
+  let operationCount = 0;
+  for (const group of groups) {
+    const shareId = `${currentUser.uid}_${recipeId}_${group.id}`;
+    batch.set(ref('recipeShares', shareId), {
+      ownerUid: currentUser.uid,
+      ownerName: currentProfile?.displayName || currentProfile?.name || currentUser.displayName || currentUser.email?.split('@')[0] || 'Dinner Table friend',
+      recipeId,
+      recipeName: String(recipe.name || 'Recipe'),
+      source: String(recipe.source || ''),
+      category: String(recipe.category || 'Other'),
+      ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients : [],
+      instructions: Array.isArray(recipe.instructions) ? recipe.instructions : [],
+      notes: String(recipe.notes || ''),
+      emoji: String(recipe.emoji || '🍽️'),
+      time: String(recipe.time || ''),
+      groupId: group.id,
+      groupName: group.name,
+      visibleTo: [...new Set([currentUser.uid, ...group.memberUids])],
+      updatedAt: serverTimestamp()
+    });
+    operationCount++;
+  }
+  for (const share of existing) {
+    if (!selectedGroupIds.has(share.groupId)) { batch.delete(ref('recipeShares', share.id)); operationCount++; }
+  }
+  if (operationCount) await batch.commit();
+  document.getElementById('recipeShareDialog').close();
+  toast(groups.length ? `Recipe shared with ${groups.length} group${groups.length === 1 ? '' : 's'}.` : 'Recipe sharing turned off.');
+}
+
+async function updateSharedRecipeSnapshot(recipe) {
+  if (!currentUser) return;
+  const shares = sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.recipeId === recipe.id);
+  if (!shares.length) return;
+  const batch = writeBatch(db);
+  for (const share of shares) {
+    batch.update(ref('recipeShares', share.id), {
+      recipeName: String(recipe.name || 'Recipe'), source: String(recipe.source || ''),
+      category: String(recipe.category || 'Other'), ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients : [],
+      instructions: Array.isArray(recipe.instructions) ? recipe.instructions : [], notes: String(recipe.notes || ''),
+      emoji: String(recipe.emoji || '🍽️'), time: String(recipe.time || ''), updatedAt: serverTimestamp()
+    });
+  }
+  await batch.commit();
+}
+
+async function deleteRecipeShares(recipeId) {
+  if (!currentUser) return;
+  const shares = sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.recipeId === recipeId);
+  if (!shares.length) return;
+  const batch = writeBatch(db);
+  shares.forEach(share => batch.delete(ref('recipeShares', share.id)));
+  await batch.commit();
+}
+
+function saveSharedRecipeCopy(share) {
+  if ((app.state.recipes || []).some(recipe => recipe.source === share.source && recipe.name === share.recipeName)) {
+    toast('That recipe is already in your recipe box.');
+    return;
+  }
+  app.state.recipes.unshift({
+    id: crypto.randomUUID(), name: share.recipeName || 'Shared recipe', source: share.source || `Shared by ${share.ownerName || 'a friend'}`,
+    category: share.category || 'Other', ingredients: Array.isArray(share.ingredients) ? share.ingredients : [],
+    instructions: Array.isArray(share.instructions) ? share.instructions : [], notes: String(share.notes || ''),
+    emoji: share.emoji || '🍽️', time: share.time || ''
+  });
+  app.save();
+  toast('A copy was saved to your recipe box.');
+}
+
 function renderEventGroupOptions() {
   const options = document.getElementById('eventGroupOptions');
   if (!options) return;
@@ -564,6 +675,9 @@ async function saveGroup(form, existingGroup = null) {
   const batch = writeBatch(db);
   batch.set(ref('groups', groupId), group);
   batch.set(ref('groupAvailability', `${currentUser.uid}__${groupId}`), availabilityShare);
+  for (const share of sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.groupId === groupId)) {
+    batch.update(ref('recipeShares', share.id), { groupName: name, visibleTo: memberUids, updatedAt: serverTimestamp() });
+  }
   await batch.commit();
   myGroups = [...myGroups.filter(item => item.id !== groupId), { ...group, createdAt: existingGroup?.createdAt || null }];
   let refreshStep = 'party menu access';
@@ -705,8 +819,10 @@ async function handleAuthState(user) {
     stopGroups?.(); stopGroups = null;
     stopSharedAvailability?.(); stopSharedAvailability = null;
     stopSharedMeals?.(); stopSharedMeals = null;
+    stopRecipeShares?.(); stopRecipeShares = null;
     friendAvailability = [];
     sharedMeals = [];
+    sharedRecipeRecords = [];
     friendEntries = [];
     myGroups = [];
     currentProfile = null;
@@ -731,6 +847,7 @@ async function handleAuthState(user) {
       subscribeToGroups();
       subscribeToSharedAvailability();
       subscribeToSharedMeals();
+      subscribeToRecipeShares();
       renderAuthPanel();
     } catch (error) {
       renderAuthPanel();
@@ -742,8 +859,10 @@ async function handleAuthState(user) {
     stopGroups?.(); stopGroups = null;
     stopSharedAvailability?.(); stopSharedAvailability = null;
     stopSharedMeals?.(); stopSharedMeals = null;
+    stopRecipeShares?.(); stopRecipeShares = null;
     friendAvailability = [];
     sharedMeals = [];
+    sharedRecipeRecords = [];
     friendEntries = [];
     myGroups = [];
     currentProfile = null;
@@ -755,6 +874,7 @@ async function handleAuthState(user) {
     }
     renderAuthPanel();
     renderPrivacyGroups(); renderEventGroupOptions();
+    renderSharedRecipes();
   }
 }
 
@@ -770,7 +890,8 @@ async function handleSubmit(event) {
   const form = event.target;
   const formId = form?.id;
   const isGroupForm = formId === 'groupCreateForm' || form.matches('[data-group-form]');
-  if (!['profileForm', 'friendForm', 'eventForm', 'collabEventForm', 'contributionForm'].includes(formId) && !isGroupForm) return;
+  const isRecipeShareForm = formId === 'recipeShareForm';
+  if (!['profileForm', 'friendForm', 'eventForm', 'collabEventForm', 'contributionForm'].includes(formId) && !isGroupForm && !isRecipeShareForm) return;
   if (event.submitter?.value === 'cancel') return;
   if (!currentUser) return;
   event.preventDefault();
@@ -790,6 +911,8 @@ async function handleSubmit(event) {
       const existingGroup = groupId ? myGroups.find(group => group.id === groupId) : null;
       if (groupId && !existingGroup) throw new Error('That group could not be found. Refresh and try again.');
       await saveGroup(form, existingGroup);
+    } else if (isRecipeShareForm) {
+      await saveRecipeShares(form);
     } else if (formId === 'eventForm') {
       const id = crypto.randomUUID();
       const selectedGroupIds = formData.getAll('audienceGroup').map(String);
@@ -901,6 +1024,9 @@ async function removeFriend(friend) {
           availability: group.availability,
           updatedAt: serverTimestamp()
         });
+        for (const share of sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.groupId === group.id)) {
+          batch.update(ref('recipeShares', share.id), { visibleTo: group.memberUids, updatedAt: serverTimestamp() });
+        }
       }
       await batch.commit();
     }
@@ -922,6 +1048,20 @@ async function removeFriend(friend) {
 
 async function handleClick(event) {
   const target = event.target;
+  const shareRecipeButton = target.closest('[data-share-recipe]');
+  if (shareRecipeButton) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const recipe = app?.state?.recipes?.find(item => item.id === shareRecipeButton.dataset.shareRecipe);
+    if (recipe) openRecipeShareDialog(recipe);
+    return;
+  }
+  const saveSharedRecipeButton = target.closest('[data-save-shared-recipe]');
+  if (saveSharedRecipeButton && currentUser) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const recipe = sharedRecipeRecords.find(item => item.id === saveSharedRecipeButton.dataset.saveSharedRecipe);
+    if (recipe) saveSharedRecipeCopy(recipe);
+    return;
+  }
   if (target.closest('#newEvent')) { renderEventGroupOptions(); return; }
   const groupDayButton = target.closest('[data-group-day]');
   if (groupDayButton && currentUser) {
@@ -951,6 +1091,9 @@ async function handleClick(event) {
       const batch = writeBatch(db);
       batch.delete(ref('groupAvailability', `${currentUser.uid}__${groupId}`));
       batch.delete(ref('groups', groupId));
+      for (const share of sharedRecipeRecords.filter(item => item.ownerUid === currentUser.uid && item.groupId === groupId)) {
+        batch.delete(ref('recipeShares', share.id));
+      }
       await batch.commit();
       renderPrivacyGroups(); renderEventGroupOptions();
       app?.render?.();
@@ -1079,7 +1222,12 @@ function startFirebaseBridge() {
   window.addEventListener('online', schedulePersonalSync);
   document.addEventListener('submit', handleSubmit, true);
   document.addEventListener('click', handleClick, true);
-  window.DinnerTableFirebase = { afterRender: decorateRenderedApp, get signedIn() { return Boolean(currentUser); } };
+  window.DinnerTableFirebase = {
+    afterRender: decorateRenderedApp,
+    updateSharedRecipeSnapshot,
+    deleteRecipeShares,
+    get signedIn() { return Boolean(currentUser); }
+  };
   onAuthStateChanged(auth, user => handleAuthState(user).catch(error => {
     renderAuthPanel(); setAuthMessage(friendlyError(error), true);
   }));
