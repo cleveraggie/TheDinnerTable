@@ -409,6 +409,7 @@ async function migrateLocalMenus() {
       name: event.name || 'Shared dinner',
       date: event.date || '',
       note: event.note || '',
+      theme: event.theme || 'classic',
       accepting: event.accepting !== false,
       contributions: Array.isArray(event.contributions) ? event.contributions : [],
       collaborators: [],
@@ -428,6 +429,7 @@ function subscribeToMenus() {
     const localMenus = app.state.events.filter(event => !event.ownerUid);
     const cloudMenus = snapshot.docs.map(item => ({
       ...item.data(), id: item.id,
+      theme: item.data().theme || 'classic',
       contributions: Array.isArray(item.data().contributions) ? item.data().contributions : [],
       collaborators: Array.isArray(item.data().collaborators) ? item.data().collaborators : [],
       memberUids: Array.isArray(item.data().memberUids) ? item.data().memberUids : []
@@ -921,7 +923,7 @@ async function handleSubmit(event) {
       const memberUids = [...new Set([currentUser.uid, ...selectedGroups.flatMap(group => group.memberUids)])];
       const menu = {
         id, name: String(formData.get('name') || '').trim(), date: String(formData.get('date') || ''),
-        note: String(formData.get('note') || '').trim(), accepting: true, contributions: [], collaborators: [],
+        note: String(formData.get('note') || '').trim(), theme: String(formData.get('theme') || 'classic'), accepting: true, contributions: [], collaborators: [],
         ownerUid: currentUser.uid, memberUids,
         audienceGroupIds: selectedGroups.map(group => group.id),
         audienceGroupNames: selectedGroups.map(group => group.name),
@@ -956,7 +958,8 @@ async function handleSubmit(event) {
       const eventId = String(formData.get('event') || '');
       const menu = app.state.events.find(item => item.id === eventId);
       if (!menu || !(menu.memberUids || []).includes(currentUser.uid)) throw new Error('You don’t have access to this shared menu yet. Ask the host to add your friend code.');
-      if (!menu.accepting) throw new Error('The host has closed contributions for this menu.');
+      const isHost = menu.ownerUid === currentUser.uid;
+      if (!menu.accepting && !isHost) throw new Error('The host has closed contributions for this menu.');
       const contribution = {
         id: crypto.randomUUID(),
         person: String(formData.get('person') || currentProfile?.displayName || currentUser.email || 'Guest').trim(),
@@ -968,8 +971,8 @@ async function handleSubmit(event) {
       };
       await updateDoc(ref('menus', eventId), { contributions: arrayUnion(contribution), updatedAt: serverTimestamp() });
       menu.contributions = [...(menu.contributions || []), contribution];
-      form.reset(); form.closest('dialog')?.close(); app.guestMode = true; app.save();
-      toast('Your contribution is on the shared menu.');
+      form.reset(); form.closest('dialog')?.close(); app.guestMode = !isHost; app.save();
+      toast(isHost ? 'Food added to your party menu.' : 'Your contribution is on the shared menu.');
     }
   } catch (error) {
     toast(friendlyError(error));
@@ -1226,6 +1229,7 @@ function startFirebaseBridge() {
     afterRender: decorateRenderedApp,
     updateSharedRecipeSnapshot,
     deleteRecipeShares,
+    get displayName() { return currentProfile?.displayName || currentProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || ''; },
     get signedIn() { return Boolean(currentUser); }
   };
   onAuthStateChanged(auth, user => handleAuthState(user).catch(error => {
