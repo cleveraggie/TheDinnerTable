@@ -45,6 +45,8 @@ let stopSharedAvailability = null;
 let stopSharedMeals = null;
 let stopRecipeShares = null;
 let sharedRecipeRecords = [];
+let sharedScheduleEvents = [];
+let stopScheduleShares = null;
 let stopPersonalData = [];
 let personalReady = { recipes: false, plans: false, shopping: false, settings: false };
 let personalBaseline = { recipes: new Map(), plans: new Map(), shopping: new Map(), settings: null };
@@ -107,12 +109,14 @@ function activatePersonalAccount(user) {
     }
     app.state.plans = cached.plans && typeof cached.plans === 'object' ? cached.plans : {};
     app.state.items = Array.isArray(cached.items) ? cached.items : [];
+    app.state.dayEvents = Array.isArray(cached.dayEvents) ? cached.dayEvents : [];
     app.weekOffset = Number(cached.weekOffset) || 0;
     app.state.recipeImporterUrl = String(cached.recipeImporterUrl || '');
   } else if (previousUid && previousUid !== uid) {
     app.state.recipes = [];
     app.state.plans = {};
     app.state.items = [];
+    app.state.dayEvents = [];
     app.weekOffset = 0;
     app.state.recipeImporterUrl = '';
   }
@@ -126,7 +130,7 @@ function cachePersonalData() {
   ensureShoppingItemIds();
   const state = app.state;
   localStorage.setItem(personalCacheKey(currentUser.uid), JSON.stringify({
-    recipes: state.recipes || [], plans: state.plans || {}, items: state.items || [],
+    recipes: state.recipes || [], plans: state.plans || {}, items: state.items || [], dayEvents: state.dayEvents || [],
     weekOffset: app.weekOffset || 0, recipeImporterUrl: state.recipeImporterUrl || '',
     savedAt: Number(state.localSavedAt) || Date.now()
   }));
@@ -195,6 +199,12 @@ function personalSettingsSnapshot(snapshot) {
     const data = snapshot.data();
     app.weekOffset = Number(data.weekOffset) || 0;
     app.state.recipeImporterUrl = String(data.recipeImporterUrl || '');
+    const merged = new Map((Array.isArray(data.dayEvents) ? data.dayEvents : []).map(item => [item.id, item]));
+    for (const item of app.state.dayEvents || []) {
+      const remote = merged.get(item.id);
+      if (!remote || Number(item.updatedAt || 0) > Number(remote.updatedAt || 0)) merged.set(item.id, item);
+    }
+    app.state.dayEvents = [...merged.values()];
   }
   personalReady.settings = !snapshot.metadata?.fromCache;
   applyingPersonalSnapshot = true;
@@ -267,9 +277,9 @@ async function syncPersonalData() {
     await writePersonalOperations('recipes', diffPersonalRecords('recipes', activeRecipeRecords(), personalBaseline.recipes, recipePayload));
     await writePersonalOperations('plans', diffPersonalRecords('plans', activePlanRecords(), personalBaseline.plans, value => ({ meals: planPayload(Array.isArray(value) ? value : value.meals) })));
     await writePersonalOperations('shopping', diffPersonalRecords('shopping', activeShoppingRecords(), personalBaseline.shopping, value => shoppingPayload(value, value.position)));
-    const settings = { weekOffset: Number(app.weekOffset) || 0, recipeImporterUrl: String(app.state.recipeImporterUrl || '') };
+    const settings = { weekOffset: Number(app.weekOffset) || 0, recipeImporterUrl: String(app.state.recipeImporterUrl || ''), dayEvents: app.state.dayEvents || [] };
     const remoteSettings = personalBaseline.settings;
-    if (!remoteSettings || remoteSettings.weekOffset !== settings.weekOffset || String(remoteSettings.recipeImporterUrl || '') !== settings.recipeImporterUrl) {
+    if (!remoteSettings || remoteSettings.weekOffset !== settings.weekOffset || String(remoteSettings.recipeImporterUrl || '') !== settings.recipeImporterUrl || JSON.stringify(remoteSettings.dayEvents || []) !== JSON.stringify(settings.dayEvents)) {
       await setDoc(personalSettingsDocument(), { ...settings, updatedAt: serverTimestamp() });
       personalBaseline.settings = settings;
     }
@@ -290,6 +300,78 @@ async function saveRecipeToCloud(recipe) {
   personalBaseline.recipes.set(String(recipe.id), { ...data, deleted: false });
   cachePersonalData();
   return true;
+}
+
+function scheduledEventPayload(event) {
+  return {
+    id: String(event.id || ''), date: String(event.date || ''),
+    title: String(event.title || ''), details: String(event.details || ''),
+    sharedWith: Array.isArray(event.sharedWith) ? [...new Set(event.sharedWith.map(String))] : [],
+    updatedAt: Number(event.updatedAt) || Date.now(), deleted: Boolean(event.deleted)
+  };
+}
+
+async function saveScheduledEvent(event) {
+  if (!currentUser || !event?.id) return false;
+  const privateEvent = { ...scheduledEventPayload(event), deleted: false, updatedAt: Date.now() };
+  event.updatedAt = privateEvent.updatedAt;
+  const visibleTo = privateEvent.sharedWith.filter(uid => uid !== currentUser.uid);
+  const sharedRef = ref('sharedScheduleEvents', `${currentUser.uid}__${event.id}`);
+  const batch = writeBatch(db);
+  const settings = {
+    weekOffset: Number(app.weekOffset) || 0,
+    recipeImporterUrl: String(app.state.recipeImporterUrl || ''),
+    dayEvents: app.state.dayEvents || []
+  };
+  batch.set(personalSettingsDocument(), { ...settings, updatedAt: serverTimestamp() });
+  batch.set(sharedRef, {
+    eventId: String(event.id), ownerUid: currentUser.uid,
+    ownerName: currentProfile?.displayName || currentProfile?.name || currentUser.displayName || currentUser.email?.split('@')[0] || 'A friend',
+    date: privateEvent.date, title: privateEvent.title, details: privateEvent.details,
+    visibleTo, deleted: false, updatedAt: serverTimestamp()
+  });
+  await batch.commit();
+  personalBaseline.settings = settings;
+  cachePersonalData();
+  return true;
+}
+
+async function deleteScheduledEvent(eventId) {
+  if (!currentUser || !eventId) return false;
+  const event = (app.state.dayEvents || []).find(item => item.id === eventId);
+  const tombstone = { id: String(eventId), date: event?.date || '', title: event?.title || '', details: '', sharedWith: [], updatedAt: Date.now(), deleted: true };
+  const events = (app.state.dayEvents || []).filter(item => item.id !== eventId).concat(tombstone);
+  const settings = {
+    weekOffset: Number(app.weekOffset) || 0,
+    recipeImporterUrl: String(app.state.recipeImporterUrl || ''), dayEvents: events
+  };
+  const batch = writeBatch(db);
+  batch.set(personalSettingsDocument(), { ...settings, updatedAt: serverTimestamp() });
+  batch.set(ref('sharedScheduleEvents', `${currentUser.uid}__${eventId}`), {
+    eventId: String(eventId), ownerUid: currentUser.uid, ownerName: '',
+    date: tombstone.date, title: tombstone.title, details: '', visibleTo: [],
+    deleted: true, updatedAt: serverTimestamp()
+  });
+  await batch.commit();
+  app.state.dayEvents = events;
+  personalBaseline.settings = settings;
+  cachePersonalData();
+  app.renderWeek();
+  return true;
+}
+
+function subscribeToScheduleShares() {
+  stopScheduleShares?.();
+  sharedScheduleEvents = [];
+  if (!currentUser) return;
+  stopScheduleShares = onSnapshot(
+    query(collection(db, 'sharedScheduleEvents'), where('visibleTo', 'array-contains', currentUser.uid)),
+    snapshot => {
+      sharedScheduleEvents = snapshot.docs.filter(item => !item.data().deleted).map(item => ({ id: item.id, ...item.data() }));
+      app.renderWeek();
+    },
+    error => reportListenerError('plans shared with you', error)
+  );
 }
 
 function wrapAppSaveWithPersonalSync() {
@@ -357,7 +439,7 @@ function renderAuthPanel() {
   const name = currentProfile?.displayName || currentUser.displayName || currentUser.email || 'Dinner Table member';
   panel.innerHTML = `<div class="card firebase-auth-card firebase-signed-in">
     <div class="eyebrow">Signed in</div><div class="firebase-account-row"><div><h3>${escapeHtml(name)}</h3><p class="profile-note">${escapeHtml(currentUser.email || 'Google account')}</p></div><button class="btn small" id="firebaseSignOut" type="button">Sign out</button></div>
-    <p class="firebase-friend-note">Your profile, recipes, meal plans, and shopping list are saved to Firebase and follow your account across devices. Availability is shared only with the groups you choose below.</p>
+    <p class="firebase-friend-note">Your profile, recipes, meal plans, private day plans, and shopping list are saved to Firebase and follow your account across devices. Availability is shared only with the groups you choose below.</p>
     <p id="firebaseAuthMessage" class="firebase-auth-message" aria-live="polite"></p>
   </div>`;
   panel.querySelector('#firebaseSignOut').addEventListener('click', async () => {
@@ -859,6 +941,7 @@ async function handleAuthState(user) {
   }
   stopPersonalData.forEach(stop => stop?.());
   stopPersonalData = [];
+  stopScheduleShares?.(); stopScheduleShares = null; sharedScheduleEvents = [];
   clearTimeout(personalSyncTimer);
   personalReady = { recipes: false, plans: false, shopping: false, settings: false };
   personalBaseline = { recipes: new Map(), plans: new Map(), shopping: new Map(), settings: null };
@@ -875,6 +958,7 @@ async function handleAuthState(user) {
       subscribeToSharedAvailability();
       subscribeToSharedMeals();
       subscribeToRecipeShares();
+      subscribeToScheduleShares();
       renderAuthPanel();
     } catch (error) {
       renderAuthPanel();
@@ -887,6 +971,7 @@ async function handleAuthState(user) {
     stopSharedAvailability?.(); stopSharedAvailability = null;
     stopSharedMeals?.(); stopSharedMeals = null;
     stopRecipeShares?.(); stopRecipeShares = null;
+    stopScheduleShares?.(); stopScheduleShares = null; sharedScheduleEvents = [];
     friendAvailability = [];
     sharedMeals = [];
     sharedRecipeRecords = [];
@@ -1061,6 +1146,9 @@ async function removeFriend(friend) {
     myGroups = updatedGroups;
     await syncGroupMenus(friend.uid);
     await syncGroupMealShares();
+    const newlyPrivatePlans = (app.state.dayEvents || []).filter(event => (event.sharedWith || []).includes(friend.uid));
+    for (const event of newlyPrivatePlans) event.sharedWith = event.sharedWith.filter(uid => uid !== friend.uid);
+    if (newlyPrivatePlans.length) await Promise.all(newlyPrivatePlans.map(saveScheduledEvent));
     await deleteDoc(ref('friendships', pairId(currentUser.uid, friend.uid)));
     friendEntries = friendEntries.filter(item => item.uid !== friend.uid);
     app.state.profile.friends = (app.state.profile.friends || []).filter(code => code !== friend.code);
@@ -1257,9 +1345,13 @@ function startFirebaseBridge() {
       if (!applyingPersonalSnapshot) schedulePersonalSync();
     },
     saveRecipe: saveRecipeToCloud,
+    saveScheduledEvent,
+    deleteScheduledEvent,
     updateSharedRecipeSnapshot,
     deleteRecipeShares,
     get displayName() { return currentProfile?.displayName || currentProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || ''; },
+    get friends() { return friendEntries.map(friend => ({ uid: friend.uid, displayName: friend.displayName || 'Dinner Table friend' })); },
+    get sharedScheduleEvents() { return sharedScheduleEvents; },
     get signedIn() { return Boolean(currentUser); }
   };
   onAuthStateChanged(auth, user => handleAuthState(user).catch(error => {
