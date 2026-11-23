@@ -90,10 +90,21 @@ function ensureShoppingItemIds() {
 function activatePersonalAccount(user) {
   const uid = user.uid;
   const previousUid = localStorage.getItem(lastPersonalUserKey);
+  const localState = app.state;
   let cached = null;
   try { cached = JSON.parse(localStorage.getItem(personalCacheKey(uid)) || 'null'); } catch { cached = null; }
   if (cached) {
-    app.state.recipes = Array.isArray(cached.recipes) ? cached.recipes : [];
+    const cachedRecipes = Array.isArray(cached.recipes) ? cached.recipes : [];
+    // The app can be used while Firebase is restoring the login session. If a
+    // recipe was saved in that window, keep the newer browser copy instead of
+    // replacing it with this account's older cache on startup.
+    if (previousUid === uid && Number(localState.localSavedAt) > Number(cached.savedAt || 0)) {
+      const merged = new Map(cachedRecipes.map(recipe => [recipe.id, recipe]));
+      for (const recipe of Array.isArray(localState.recipes) ? localState.recipes : []) merged.set(recipe.id, recipe);
+      app.state.recipes = [...merged.values()];
+    } else {
+      app.state.recipes = cachedRecipes;
+    }
     app.state.plans = cached.plans && typeof cached.plans === 'object' ? cached.plans : {};
     app.state.items = Array.isArray(cached.items) ? cached.items : [];
     app.weekOffset = Number(cached.weekOffset) || 0;
@@ -116,7 +127,8 @@ function cachePersonalData() {
   const state = app.state;
   localStorage.setItem(personalCacheKey(currentUser.uid), JSON.stringify({
     recipes: state.recipes || [], plans: state.plans || {}, items: state.items || [],
-    weekOffset: app.weekOffset || 0, recipeImporterUrl: state.recipeImporterUrl || ''
+    weekOffset: app.weekOffset || 0, recipeImporterUrl: state.recipeImporterUrl || '',
+    savedAt: Number(state.localSavedAt) || Date.now()
   }));
 }
 
