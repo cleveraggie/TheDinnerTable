@@ -219,7 +219,7 @@ function schedulePersonalSync() {
   clearTimeout(personalSyncTimer);
   personalSyncTimer = setTimeout(() => syncPersonalData().catch(error => {
     console.error('Could not sync personal app data to Firebase.', error);
-    toast(`Your changes are saved on this device, but Firebase could not sync them. ${friendlyError(error)}`);
+    toast(`Your changes are saved on this device, but Firebase sync failed (${error?.code || 'error'}): ${friendlyError(error)}`, 8000);
   }), 500);
 }
 
@@ -277,6 +277,19 @@ async function syncPersonalData() {
   } finally {
     syncingPersonalData = false;
   }
+}
+
+async function saveRecipeToCloud(recipe) {
+  if (!currentUser || !recipe?.id) return false;
+  const data = recipePayload(recipe);
+  await setDoc(personalDocument('recipes', String(recipe.id)), {
+    ...data,
+    deleted: false,
+    updatedAt: serverTimestamp()
+  });
+  personalBaseline.recipes.set(String(recipe.id), { ...data, deleted: false });
+  cachePersonalData();
+  return true;
 }
 
 function wrapAppSaveWithPersonalSync() {
@@ -1243,6 +1256,7 @@ function startFirebaseBridge() {
       cachePersonalData();
       if (!applyingPersonalSnapshot) schedulePersonalSync();
     },
+    saveRecipe: saveRecipeToCloud,
     updateSharedRecipeSnapshot,
     deleteRecipeShares,
     get displayName() { return currentProfile?.displayName || currentProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || ''; },
