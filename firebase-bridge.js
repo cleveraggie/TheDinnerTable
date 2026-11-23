@@ -1239,6 +1239,10 @@ function startFirebaseBridge() {
   document.addEventListener('click', handleClick, true);
   window.DinnerTableFirebase = {
     afterRender: decorateRenderedApp,
+    afterSave: () => {
+      cachePersonalData();
+      if (!applyingPersonalSnapshot) schedulePersonalSync();
+    },
     updateSharedRecipeSnapshot,
     deleteRecipeShares,
     get displayName() { return currentProfile?.displayName || currentProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || ''; },
