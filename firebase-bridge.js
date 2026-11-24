@@ -314,6 +314,9 @@ function scheduledEventPayload(event) {
 async function saveScheduledEvent(event) {
   if (!currentUser || !event?.id) return false;
   const privateEvent = { ...scheduledEventPayload(event), deleted: false, updatedAt: Date.now() };
+  const connectedFriendUids = new Set(friendEntries.map(friend => friend.uid));
+  const invalidRecipients = privateEvent.sharedWith.filter(uid => uid !== currentUser.uid && !connectedFriendUids.has(uid));
+  if (invalidRecipients.length) throw new Error('A selected friend is no longer connected. Reconnect with their friend code, then share the plan again.');
   event.updatedAt = privateEvent.updatedAt;
   const visibleTo = privateEvent.sharedWith.filter(uid => uid !== currentUser.uid);
   const sharedRef = ref('sharedScheduleEvents', `${currentUser.uid}__${event.id}`);
