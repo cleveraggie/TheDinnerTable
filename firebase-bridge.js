@@ -307,6 +307,7 @@ function scheduledEventPayload(event) {
     id: String(event.id || ''), date: String(event.date || ''),
     title: String(event.title || ''), details: String(event.details || ''),
     sharedWith: Array.isArray(event.sharedWith) ? [...new Set(event.sharedWith.map(String))] : [],
+    includeMeals: Boolean(event.includeMeals),
     updatedAt: Number(event.updatedAt) || Date.now(), deleted: Boolean(event.deleted)
   };
 }
@@ -319,6 +320,12 @@ async function saveScheduledEvent(event) {
   if (invalidRecipients.length) throw new Error('A selected friend is no longer connected. Reconnect with their friend code, then share the plan again.');
   event.updatedAt = privateEvent.updatedAt;
   const visibleTo = privateEvent.sharedWith.filter(uid => uid !== currentUser.uid);
+  const meals = privateEvent.includeMeals
+    ? (app.state.plans[privateEvent.date] || []).map(item => {
+      const recipe = app.state.recipes.find(candidate => candidate.id === item.recipe);
+      return recipe ? { meal: String(item.meal || 'Meal'), name: String(recipe.name || 'Planned meal') } : null;
+    }).filter(Boolean)
+    : [];
   const sharedRef = ref('sharedScheduleEvents', `${currentUser.uid}__${event.id}`);
   const batch = writeBatch(db);
   const settings = {
@@ -331,7 +338,7 @@ async function saveScheduledEvent(event) {
     eventId: String(event.id), ownerUid: currentUser.uid,
     ownerName: currentProfile?.displayName || currentProfile?.name || currentUser.displayName || currentUser.email?.split('@')[0] || 'A friend',
     date: privateEvent.date, title: privateEvent.title, details: privateEvent.details,
-    visibleTo, deleted: false, updatedAt: serverTimestamp()
+    visibleTo, meals, deleted: false, updatedAt: serverTimestamp()
   });
   await batch.commit();
   personalBaseline.settings = settings;
@@ -353,7 +360,7 @@ async function deleteScheduledEvent(eventId) {
   batch.set(ref('sharedScheduleEvents', `${currentUser.uid}__${eventId}`), {
     eventId: String(eventId), ownerUid: currentUser.uid, ownerName: '',
     date: tombstone.date, title: tombstone.title, details: '', visibleTo: [],
-    deleted: true, updatedAt: serverTimestamp()
+    meals: [], deleted: true, updatedAt: serverTimestamp()
   });
   await batch.commit();
   app.state.dayEvents = events;
