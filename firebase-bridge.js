@@ -368,7 +368,7 @@ function subscribeToScheduleShares() {
     query(collection(db, 'sharedScheduleEvents'), where('visibleTo', 'array-contains', currentUser.uid)),
     snapshot => {
       sharedScheduleEvents = snapshot.docs.filter(item => !item.data().deleted).map(item => ({ id: item.id, ...item.data() }));
-      app.renderWeek();
+      app.render();
     },
     error => reportListenerError('plans shared with you', error)
   );
@@ -740,10 +740,16 @@ function renderEventGroupOptions() {
     options.innerHTML = '<span class="profile-note">Sign in to share menus with groups.</span>';
     return;
   }
-  options.innerHTML = myGroups.length
-    ? myGroups.map(group => `<label class="group-check"><input type="checkbox" name="audienceGroup" value="${escapeHtml(group.id)}"><span>${escapeHtml(group.name)}</span></label>`).join('')
-    : '<span class="profile-note">Create a group in Settings first. You can also invite people to a private menu later.</span>';
+  const groups = myGroups.length
+    ? `<div class="party-audience-block"><b>Groups</b><div class="group-checks">${myGroups.map(group => `<label class="group-check"><input type="checkbox" name="audienceGroup" value="${escapeHtml(group.id)}"><span>${escapeHtml(group.name)}</span></label>`).join('')}</div></div>`
+    : '';
+  const friends = friendEntries.length
+    ? `<div class="party-audience-block"><b>Specific friends</b><div class="group-checks">${friendEntries.map(friend => `<label class="group-check"><input type="checkbox" name="directInvite" value="${escapeHtml(friend.uid)}"><span>${escapeHtml(friend.displayName)}</span></label>`).join('')}</div></div>`
+    : '';
+  options.innerHTML = groups + friends || '<span class="profile-note">Connect with friends or create a group in My Plans to choose who can see this menu.</span>';
 }
+
+function preparePartySharing() { renderEventGroupOptions(); }
 
 function renderPrivacyGroups() {
   const root = document.getElementById('privacyGroups');
@@ -1030,14 +1036,16 @@ async function handleSubmit(event) {
       const selectedGroupIds = formData.getAll('audienceGroup').map(String);
       const selectedGroups = myGroups.filter(group => selectedGroupIds.includes(group.id));
       if (selectedGroups.length !== selectedGroupIds.length) throw new Error('One of the selected groups is no longer available. Please reopen the menu form.');
-      const memberUids = [...new Set([currentUser.uid, ...selectedGroups.flatMap(group => group.memberUids)])];
+      const directInviteUids = [...new Set(formData.getAll('directInvite').map(String))];
+      if (directInviteUids.some(uid => !friendEntries.some(friend => friend.uid === uid))) throw new Error('A selected friend is no longer connected. Reopen the form and try again.');
+      const memberUids = [...new Set([currentUser.uid, ...directInviteUids, ...selectedGroups.flatMap(group => group.memberUids)])];
       const menu = {
         id, name: String(formData.get('name') || '').trim(), date: String(formData.get('date') || ''),
         note: String(formData.get('note') || '').trim(), theme: String(formData.get('theme') || 'classic'), accepting: true, contributions: [], collaborators: [],
         ownerUid: currentUser.uid, memberUids,
         audienceGroupIds: selectedGroups.map(group => group.id),
         audienceGroupNames: selectedGroups.map(group => group.name),
-        directInviteUids: []
+        directInviteUids
       };
       await setDoc(ref('menus', id), { ...menu, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       app.state.events.unshift(menu);
@@ -1349,9 +1357,12 @@ function startFirebaseBridge() {
     deleteScheduledEvent,
     updateSharedRecipeSnapshot,
     deleteRecipeShares,
+    preparePartySharing,
     get displayName() { return currentProfile?.displayName || currentProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || ''; },
     get friends() { return friendEntries.map(friend => ({ uid: friend.uid, displayName: friend.displayName || 'Dinner Table friend' })); },
     get sharedScheduleEvents() { return sharedScheduleEvents; },
+    get sharedMeals() { return sharedMeals; },
+    get uid() { return currentUser?.uid || ''; },
     get signedIn() { return Boolean(currentUser); }
   };
   onAuthStateChanged(auth, user => handleAuthState(user).catch(error => {
