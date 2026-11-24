@@ -73,9 +73,9 @@ const friendlyError = error => {
 };
 const reportListenerError = (label, error) => {
   console.error(`The Dinner Table could not load ${label}.`, error);
-  toast(`Could not load ${label}. ${friendlyError(error)}`);
+  toast(`Could not load ${label} (${error?.code || 'error'}). ${friendlyError(error)}`, 7000);
 };
-const toast = message => app?.toast?.(message);
+const toast = (message, duration) => app?.toast?.(message, duration);
 const personalCacheKey = uid => `sunday-table-personal-${uid}`;
 const lastPersonalUserKey = 'sunday-table-last-cloud-user';
 const seedRecipeIds = new Set(['r1', 'r2', 'r3', 'r4']);
